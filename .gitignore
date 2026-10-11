@@ -1,0 +1,9 @@
+/bin/
+/dist/
+*.test
+*.out
+*.db
+*.sqlite
+.env
+.env.*
+.worktrees/
