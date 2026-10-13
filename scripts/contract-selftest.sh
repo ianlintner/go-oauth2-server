@@ -12,9 +12,10 @@
 # usage: scripts/contract-selftest.sh [CONTRACT_DIR]   (default: .contract)
 set -euo pipefail
 
+cd "$(dirname "$0")/.."
 contract_dir="$(cd "${1:-.contract}" && pwd)"
 pin="$(sed -n 's/^commit:[[:space:]]*//p' conformance-contract.yaml)"
-[ -n "$pin" ] || { echo "conformance-contract.yaml has no commit pin" >&2; exit 1; }
+printf '%s' "$pin" | grep -Eq '^[0-9a-f]{40}$' || { echo "conformance-contract.yaml needs a full 40-hex commit pin" >&2; exit 1; }
 actual="$(git -C "$contract_dir" rev-parse HEAD)"
 [ "$actual" = "$pin" ] || { echo "contract at $actual, pinned $pin" >&2; exit 1; }
 
@@ -33,14 +34,14 @@ start_stub() {
   node -e '
     const http = require("node:http");
     const fs = require("node:fs");
-    const [status, portFile] = [Number(process.argv[1]), process.argv[2]];
+    const [status, body, portFile] = [Number(process.argv[1]), process.argv[2], process.argv[3]];
     const srv = http.createServer((req, res) => {
       req.resume();
       res.writeHead(status, { "content-type": "application/json", "cache-control": "no-store" });
-      res.end(JSON.stringify({ error: "unsupported_grant_type" }));
+      res.end(body);
     });
     srv.listen(0, "127.0.0.1", () => fs.writeFileSync(portFile, String(srv.address().port)));
-  ' "$1" "$work/port" &
+  ' "$1" "$2" "$work/port" &
   stub_pid=$!
   for _ in $(seq 1 50); do [ -s "$work/port" ] && break; sleep 0.1; done
   [ -s "$work/port" ] || { echo "stub did not start" >&2; exit 1; }
@@ -53,16 +54,22 @@ run_runner() {
     --base-url "$base_url" --scenarios "$work/scenarios" --profile core
 }
 
-echo "== known match: stub answers 400, scenario expects 400 =="
-start_stub 400
+echo "== known match: stub answers 400 unsupported_grant_type, scenario expects same =="
+start_stub 400 '{"error":"unsupported_grant_type"}'
 set +e; run_runner; match_status=$?; set -e
 stop_stub
 [ "$match_status" -eq 0 ] || { echo "FAIL: known match exited $match_status, want 0" >&2; exit 1; }
 
 echo "== known mismatch: stub answers 200, scenario expects 400 =="
-start_stub 200
+start_stub 200 '{"error":"unsupported_grant_type"}'
 set +e; run_runner; mismatch_status=$?; set -e
 stop_stub
 [ "$mismatch_status" -eq 1 ] || { echo "FAIL: known mismatch exited $mismatch_status, want 1" >&2; exit 1; }
 
-echo "contract-selftest: OK (match=0, mismatch=1)"
+echo "== known mismatch: stub answers 400 with the wrong error body =="
+start_stub 400 '{"error":"invalid_request"}'
+set +e; run_runner; body_status=$?; set -e
+stop_stub
+[ "$body_status" -eq 1 ] || { echo "FAIL: body mismatch exited $body_status, want 1" >&2; exit 1; }
+
+echo "contract-selftest: OK (match=0, mismatch=1, body-mismatch=1)"

@@ -6,7 +6,7 @@ Go port of [`rust-oauth2-server`](https://github.com/ianlintner/rust-oauth2-serv
 
 ## Conformance contract
 
-The shared contract repo `ianlintner/oauth2-conformance` is pinned by commit in [`conformance-contract.yaml`](conformance-contract.yaml) (deliberately not `conformance.yaml`, which is reserved for the implementation manifest once a profile can be claimed). It is not vendored: CI checks the pinned commit out and runs its published runner via an SUT-free self-test ([`scripts/contract-selftest.sh`](scripts/contract-selftest.sh)) that asserts a known match exits 0 and a known mismatch exits nonzero.
+The shared contract repo `ianlintner/oauth2-conformance` is pinned by commit in [`conformance-contract.yaml`](conformance-contract.yaml) (deliberately not `conformance.yaml`, which is reserved for the implementation manifest once a profile can be claimed). It is not vendored: CI checks the pinned commit out and runs its published runner via an SUT-free self-test ([`scripts/contract-selftest.sh`](scripts/contract-selftest.sh)) that asserts a known match exits 0 and known mismatches (wrong status, wrong body) exit 1.
 
 ## Building and testing
 
@@ -16,4 +16,4 @@ go test -race ./...
 go vet ./...
 ```
 
-CI additionally runs staticcheck and govulncheck (both version-pinned) inside a single `verify` check.
+CI additionally runs staticcheck and govulncheck (both version-pinned) inside the single `verify` check, which also runs the contract self-test.

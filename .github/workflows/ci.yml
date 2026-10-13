@@ -10,9 +10,9 @@ on:
   pull_request:
 
 jobs:
-  # Single named check the branch ruleset requires on main. Keeping every Go
-  # gate inside one job means one status context cannot go green while a
-  # sibling gate silently stops running.
+  # Single named check the branch ruleset requires on main. Every gate lives
+  # inside this one job so one status context cannot go green while a sibling
+  # gate silently stops running or is left out of the ruleset.
   verify:
     name: verify
     runs-on: ubuntu-latest
@@ -25,11 +25,13 @@ jobs:
           go-version-file: go.mod
           cache: true
 
-      # staticcheck and govulncheck are pinned by version so a new upstream
-      # release cannot change the verdict of an unchanged commit.
       - name: go vet
         run: go vet ./...
 
+      # staticcheck and govulncheck binaries are pinned by version so a new
+      # upstream release cannot change the verdict of an unchanged commit.
+      # govulncheck's advisory database is live by design: a newly published
+      # stdlib or dependency advisory is meant to turn this red.
       - name: staticcheck
         run: |
           go install honnef.co/go/tools/cmd/staticcheck@v0.8.2
@@ -43,23 +45,16 @@ jobs:
       - name: go test -race
         run: go test -race ./...
 
-  # Consumes the shared contract instead of vendoring fixtures: the contract
-  # repo is checked out at the commit pinned in conformance-contract.yaml and
-  # its published runner is exercised by a deterministic, SUT-free self-test.
-  #
-  # No Go server is started and no unimplemented core scenario is gated here:
-  # scope C defers live profile conformance to the core implementation card
-  # (t_7856b882), which is the first card that can truthfully claim a profile.
-  # This job only proves the runner wires scenario expectations into its exit
-  # status — known match exits 0, known mismatch exits 1 — so a future green
-  # conformance gate cannot silently pass (or be green-by-skip).
-  conformance:
-    name: conformance-contract
-    runs-on: ubuntu-latest
-    timeout-minutes: 20
-    steps:
-      - uses: actions/checkout@v4
-
+      # Consumes the shared contract instead of vendoring fixtures: the contract
+      # repo is checked out at the commit pinned in conformance-contract.yaml and
+      # its published runner is exercised by a deterministic, SUT-free self-test.
+      #
+      # No Go server is started and no unimplemented core scenario is gated here:
+      # live profile conformance belongs to the core implementation card
+      # (t_7856b882), the first card that can truthfully claim a profile. This
+      # only proves the runner wires scenario expectations into its exit status
+      # (known match exits 0, known mismatch exits 1), so a future conformance
+      # gate cannot silently pass.
       - uses: pnpm/action-setup@v4
         with:
           version: 10.29.3
@@ -68,28 +63,18 @@ jobs:
         with:
           node-version: 24
 
-      # The contract revision is pinned in one place, conformance-contract.yaml,
-      # so CI and the self-test can never drift apart.
-      - name: Resolve pinned contract revision
-        id: contract
+      - name: Check out the pinned contract
         run: |
           set -euo pipefail
           repository="$(sed -n 's/^repository:[[:space:]]*//p' conformance-contract.yaml)"
           commit="$(sed -n 's/^commit:[[:space:]]*//p' conformance-contract.yaml)"
-          if [ -z "$repository" ] || [ -z "$commit" ]; then
-            echo "conformance-contract.yaml must pin both repository and commit" >&2
+          if [ -z "$repository" ] || ! printf '%s' "$commit" | grep -Eq '^[0-9a-f]{40}$'; then
+            echo "conformance-contract.yaml must pin repository and a full 40-hex commit" >&2
             exit 1
           fi
-          echo "repository=$repository" >> "$GITHUB_OUTPUT"
-          echo "commit=$commit" >> "$GITHUB_OUTPUT"
-
-      - name: Check out the pinned contract
-        run: |
-          set -euo pipefail
-          git clone --filter=blob:none --no-checkout \
-            "${{ steps.contract.outputs.repository }}" .contract
-          git -C .contract checkout --detach "${{ steps.contract.outputs.commit }}"
-          test "$(git -C .contract rev-parse HEAD)" = "${{ steps.contract.outputs.commit }}"
+          git clone --filter=blob:none --no-checkout "$repository" .contract
+          git -C .contract checkout --detach "$commit"
+          test "$(git -C .contract rev-parse HEAD)" = "$commit"
 
       - name: Install the runner's frozen dependencies
         run: (cd .contract/runner && pnpm install --frozen-lockfile)
