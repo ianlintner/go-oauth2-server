@@ -23,7 +23,7 @@ The port conforms to the shared, versioned contract in [`ianlintner/oauth2-confo
 ## Port map and stages
 
 1. **Architecture and contracts:** this document; owner review before implementation.
-2. **CI bootstrap:** `go vet`, `staticcheck`, `govulncheck`, `go test -race`, and a pinned `conformance.yaml` wired to the contract runner (no profiles claimed yet), under one named required check.
+2. **CI bootstrap:** `go vet`, `staticcheck`, `govulncheck`, `go test -race`, and the shared contract pinned by commit in `conformance-contract.yaml`, with an SUT-free runner self-test (known match exits 0, known mismatch exits nonzero), under one named required check. The `conformance.yaml` manifest is deferred to the first card that can claim a profile, because the contract's manifest schema requires at least one.
 3. **Skeleton and storage ports:** health endpoint, typed config/errors, clock/random injection, SQLite adapter, storage contract suite, HTTP integration harness.
 4. **Authorization code + PKCE:** client fixture, exact redirect URI match, S256 PKCE only, state and `iss` response (RFC 9207), atomic one-time code redemption, confidential/public client authentication, no implicit/ROPC. Maps RFC 6749/7636/9207 and RFC 9700 negative cases (duplicates, wrong redirect, replay, wrong verifier, missing/weak client auth).
 5. **Token lifecycle and OIDC baseline:** client credentials, JWT/JWKS with key IDs, refresh rotation and family replay revocation, revocation/introspection, discovery, ID token/nonce, UserInfo. Maps RFC 6750, 7009, 7662, 8414, 9068 and OIDC Core with cross-process persistence checks.
