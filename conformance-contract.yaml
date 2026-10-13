@@ -1,0 +1,19 @@
+# The revision of the shared conformance contract this repository is built and
+# tested against, pinned by commit in exactly one place.
+#
+# github.com/ianlintner/oauth2-conformance is NOT vendored here: CI checks it
+# out at this commit and runs its published runner, so this repository contains
+# no fixtures and no harness of its own.
+#
+# This file is deliberately not `conformance.yaml`. An implementation manifest
+# is validated against the contract's
+# schemas/implementation-manifest.schema.json, which requires `profiles` to be
+# nonempty (minItems: 1) and sets additionalProperties: false — so a manifest
+# cannot express "no profiles claimed yet", and a git commit pin is not a field
+# it accepts. The manifest lands in the first card that can truthfully claim a
+# profile (see docs/architecture-proposal.md, port map stage 2).
+#
+# Bump this only in the card that intentionally moves to a newer contract
+# revision; moving the pin is a reviewed change, not a drive-by edit.
+repository: https://github.com/ianlintner/oauth2-conformance
+commit: fd8c40a4e7ec5709e299ea3920b7b44797482db8

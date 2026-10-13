@@ -1,0 +1,83 @@
+name: CI
+
+# Least privilege: this workflow only reads the repository (actions/checkout).
+permissions:
+  contents: read
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  # Single named check the branch ruleset requires on main. Every gate lives
+  # inside this one job so one status context cannot go green while a sibling
+  # gate silently stops running or is left out of the ruleset.
+  verify:
+    name: verify
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: go vet
+        run: go vet ./...
+
+      # staticcheck and govulncheck binaries are pinned by version so a new
+      # upstream release cannot change the verdict of an unchanged commit.
+      # govulncheck's advisory database is live by design: a newly published
+      # stdlib or dependency advisory is meant to turn this red.
+      - name: staticcheck
+        run: |
+          go install honnef.co/go/tools/cmd/staticcheck@v0.8.2
+          "$(go env GOPATH)/bin/staticcheck" ./...
+
+      - name: govulncheck
+        run: |
+          go install golang.org/x/vuln/cmd/govulncheck@v1.1.4
+          "$(go env GOPATH)/bin/govulncheck" ./...
+
+      - name: go test -race
+        run: go test -race ./...
+
+      # Consumes the shared contract instead of vendoring fixtures: the contract
+      # repo is checked out at the commit pinned in conformance-contract.yaml and
+      # its published runner is exercised by a deterministic, SUT-free self-test.
+      #
+      # No Go server is started and no unimplemented core scenario is gated here:
+      # live profile conformance belongs to the core implementation card
+      # (t_7856b882), the first card that can truthfully claim a profile. This
+      # only proves the runner wires scenario expectations into its exit status
+      # (known match exits 0, known mismatch exits 1), so a future conformance
+      # gate cannot silently pass.
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10.29.3
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+
+      - name: Check out the pinned contract
+        run: |
+          set -euo pipefail
+          repository="$(sed -n 's/^repository:[[:space:]]*//p' conformance-contract.yaml)"
+          commit="$(sed -n 's/^commit:[[:space:]]*//p' conformance-contract.yaml)"
+          if [ -z "$repository" ] || ! printf '%s' "$commit" | grep -Eq '^[0-9a-f]{40}$'; then
+            echo "conformance-contract.yaml must pin repository and a full 40-hex commit" >&2
+            exit 1
+          fi
+          git clone --filter=blob:none --no-checkout "$repository" .contract
+          git -C .contract checkout --detach "$commit"
+          test "$(git -C .contract rev-parse HEAD)" = "$commit"
+
+      - name: Install the runner's frozen dependencies
+        run: (cd .contract/runner && pnpm install --frozen-lockfile)
+
+      - name: Runner self-test (match exits 0, mismatch exits 1)
+        run: scripts/contract-selftest.sh .contract
