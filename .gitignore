@@ -7,3 +7,5 @@
 .env
 .env.*
 .worktrees/
+*.db-wal
+*.db-shm
