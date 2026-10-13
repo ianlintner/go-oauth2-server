@@ -67,8 +67,6 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: 24
-          cache: pnpm
-          cache-dependency-path: .contract/runner/pnpm-lock.yaml
 
       # The contract revision is pinned in one place, conformance-contract.yaml,
       # so CI and the self-test can never drift apart.
