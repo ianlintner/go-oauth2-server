@@ -45,16 +45,19 @@ jobs:
       - name: go test -race
         run: go test -race ./...
 
+      - name: SUT smoke test (startup, readiness, fail-closed config)
+        run: scripts/sut-smoke.sh
+
       # Consumes the shared contract instead of vendoring fixtures: the contract
       # repo is checked out at the commit pinned in conformance-contract.yaml and
       # its published runner is exercised by a deterministic, SUT-free self-test.
       #
-      # No Go server is started and no unimplemented core scenario is gated here:
-      # live profile conformance belongs to the core implementation card
-      # (t_7856b882), the first card that can truthfully claim a profile. This
-      # only proves the runner wires scenario expectations into its exit status
-      # (known match exits 0, known mismatch exits 1), so a future conformance
-      # gate cannot silently pass.
+      # No unimplemented core scenario is gated here: the server has no grant
+      # endpoints yet, so no profile can truthfully be claimed. Live profile
+      # conformance belongs to the grant-flow cards. This only proves the runner
+      # wires scenario expectations into its exit status (known match exits 0,
+      # known mismatch exits 1), so a future conformance gate cannot silently
+      # pass. The Go binary itself is exercised by scripts/sut-smoke.sh above.
       - uses: pnpm/action-setup@v4
         with:
           version: 10.29.3
