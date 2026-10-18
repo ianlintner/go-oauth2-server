@@ -50,14 +50,8 @@ jobs:
 
       # Consumes the shared contract instead of vendoring fixtures: the contract
       # repo is checked out at the commit pinned in conformance-contract.yaml and
-      # its published runner is exercised by a deterministic, SUT-free self-test.
-      #
-      # No unimplemented core scenario is gated here: the server has no grant
-      # endpoints yet, so no profile can truthfully be claimed. Live profile
-      # conformance belongs to the grant-flow cards. This only proves the runner
-      # wires scenario expectations into its exit status (known match exits 0,
-      # known mismatch exits 1), so a future conformance gate cannot silently
-      # pass. The Go binary itself is exercised by scripts/sut-smoke.sh above.
+      # its published runner is exercised by a deterministic, SUT-free self-test,
+      # then run against a locally started Go server for the core profile.
       - uses: pnpm/action-setup@v4
         with:
           version: 10.29.3
@@ -84,3 +78,10 @@ jobs:
 
       - name: Runner self-test (match exits 0, mismatch exits 1)
         run: scripts/contract-selftest.sh .contract
+
+      # Live conformance: start this server in test mode and run the pinned
+      # contract's core profile plus the supplementary scenarios against it.
+      # A stable failure fails the check, so a grant-flow regression cannot be
+      # swept under the self-test (which only proves the runner's wiring).
+      - name: Run the core profile against the Go server
+        run: scripts/conformance-run.sh .contract

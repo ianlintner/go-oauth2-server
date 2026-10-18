@@ -1,23 +1,39 @@
 // Package server assembles the HTTP surface of the OAuth2 server.
 //
-// Skeleton scope: only health and readiness are routed. OAuth grant endpoints
-// are added by later implementation cards, so a request for /oauth/token must
-// fail loudly (404) rather than appear handled.
+// Health and readiness are always routed. The authorization-code endpoints
+// (authorize, token, metadata) are routed only when a Service is supplied, and
+// the resource-owner login form only in conformance mode: this slice has no
+// user-management surface, so credential entry exists solely as the shared
+// contract's test-mode login (contract/sut-interface.md §3, §5).
 package server
 
 import (
 	"context"
+	"log/slog"
 	"net/http"
 
+	"github.com/ianlintner/go-oauth2-server/internal/authcode"
 	"github.com/ianlintner/go-oauth2-server/internal/health"
+	"github.com/ianlintner/go-oauth2-server/internal/session"
 )
 
 // Deps are the collaborators the router needs.
 type Deps struct {
 	// Ping reports whether the backing store is reachable; nil means always up.
 	Ping func(context.Context) error
-	// Conformance advertises test mode on /health (see internal/conformance).
+	// Conformance advertises test mode on /health (see internal/conformance)
+	// and enables the test-mode login form.
 	Conformance bool
+
+	// Service and Sessions enable the OAuth endpoints; both are required
+	// together. Issuer is the exact configured issuer identifier (RFC 9207
+	// iss, RFC 8414 issuer); it is never normalized.
+	Service  *authcode.Service
+	Sessions *session.Manager
+	Issuer   string
+
+	// Logger receives internal error causes, which are never sent to clients.
+	Logger *slog.Logger
 }
 
 // NewRouter returns a router with no dependencies, serving liveness only
@@ -37,5 +53,32 @@ func New(d Deps) http.Handler {
 	mux := http.NewServeMux()
 	mux.Handle("GET /healthz", health.NewHandler())
 	mux.Handle("GET /health", health.NewReadyHandler(ping, d.Conformance))
-	return mux
+
+	if d.Service != nil && d.Sessions != nil {
+		h := newOAuthHandlers(d)
+		mux.HandleFunc("GET /.well-known/oauth-authorization-server", h.metadata)
+		mux.HandleFunc("/oauth/authorize", h.authorize)
+		mux.HandleFunc("/oauth/token", h.token)
+		if d.Conformance {
+			mux.HandleFunc("GET /auth/login", h.loginForm)
+			mux.HandleFunc("POST /auth/login", h.loginSubmit)
+		}
+	}
+	return hardenHeaders(mux)
+}
+
+// hardenHeaders sets response headers that are safe on every route: no MIME
+// sniffing, no framing (clickjacking of the login form), no referrer leakage
+// of authorization URLs, and a CSP that forbids loading anything. The CSP
+// deliberately omits form-action: browsers apply it to the redirect chain
+// that follows a form post, which would block the login -> authorize ->
+// client redirect.
+func hardenHeaders(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		h := w.Header()
+		h.Set("X-Content-Type-Options", "nosniff")
+		h.Set("Content-Security-Policy", "default-src 'none'; frame-ancestors 'none'; base-uri 'none'")
+		h.Set("Referrer-Policy", "no-referrer")
+		next.ServeHTTP(w, r)
+	})
 }

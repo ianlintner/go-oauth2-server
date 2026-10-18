@@ -16,4 +16,4 @@
 # Bump this only in the card that intentionally moves to a newer contract
 # revision; moving the pin is a reviewed change, not a drive-by edit.
 repository: https://github.com/ianlintner/oauth2-conformance
-commit: f6d0f3851624c0999769b6b658deccfcf99d72f6
+commit: 62e3e9343480c990833fc4a60192f222d2251c18
