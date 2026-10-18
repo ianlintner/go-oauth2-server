@@ -65,6 +65,20 @@ type RefreshToken struct {
 	ExpiresAt time.Time
 }
 
+// AccessToken records an issued access token so it can be revoked and
+// introspected. The JTI is the JWT's unique id (the "jti" claim) and is the
+// primary key; the token value itself is a JWT signed with the server key and
+// is never stored, only the jti and its lifecycle metadata.
+type AccessToken struct {
+	JTI       string
+	ClientID  string
+	UserID    string
+	Scope     string
+	IssuedAt  time.Time
+	ExpiresAt time.Time
+	RevokedAt time.Time // zero when active
+}
+
 // ClientRepository stores registered clients.
 type ClientRepository interface {
 	// Create returns ErrConflict if the client ID exists.
@@ -106,6 +120,18 @@ type RefreshTokenRepository interface {
 	RevokeFamily(ctx context.Context, familyID string, now time.Time) (int, error)
 }
 
+// AccessTokenRepository stores issued access tokens for revocation and
+// introspection.
+type AccessTokenRepository interface {
+	// Create returns ErrConflict if the jti exists.
+	Create(ctx context.Context, t AccessToken) error
+	// GetByJTI returns ErrNotFound if the jti does not exist.
+	GetByJTI(ctx context.Context, jti string) (AccessToken, error)
+	// Revoke marks the token revoked and reports whether it was newly
+	// revoked. Revoking an unknown or already-revoked token is not an error.
+	Revoke(ctx context.Context, jti string, now time.Time) (bool, error)
+}
+
 // Repositories groups the repositories. A Store exposes them in autocommit
 // mode; WithTx hands the same set bound to one transaction.
 type Repositories interface {
@@ -113,6 +139,7 @@ type Repositories interface {
 	Users() UserRepository
 	AuthCodes() AuthCodeRepository
 	RefreshTokens() RefreshTokenRepository
+	AccessTokens() AccessTokenRepository
 }
 
 // Store is the storage port every adapter (SQLite now, PostgreSQL later)

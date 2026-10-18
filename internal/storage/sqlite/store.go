@@ -127,6 +127,7 @@ type repos struct {
 	users   *userRepo
 	codes   *authCodeRepo
 	refresh *refreshRepo
+	access  *accessTokenRepo
 }
 
 func newRepos(db execer) repos {
@@ -135,6 +136,7 @@ func newRepos(db execer) repos {
 		users:   &userRepo{db},
 		codes:   &authCodeRepo{db},
 		refresh: &refreshRepo{db},
+		access:  &accessTokenRepo{db},
 	}
 }
 
@@ -149,6 +151,9 @@ func (r repos) AuthCodes() oauth.AuthCodeRepository { return r.codes }
 
 // RefreshTokens returns the refresh-token repository.
 func (r repos) RefreshTokens() oauth.RefreshTokenRepository { return r.refresh }
+
+// AccessTokens returns the access-token repository.
+func (r repos) AccessTokens() oauth.AccessTokenRepository { return r.access }
 
 // createErr maps a failed INSERT: a constraint violation is a conflict.
 func createErr(err error) error {

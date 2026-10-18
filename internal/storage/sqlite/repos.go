@@ -232,3 +232,55 @@ func (r *refreshRepo) RevokeFamily(ctx context.Context, familyID string, now tim
 	}
 	return int(n), nil
 }
+
+// --- access tokens ---
+
+type accessTokenRepo struct{ db execer }
+
+func (r *accessTokenRepo) Create(ctx context.Context, t oauth.AccessToken) error {
+	_, err := r.db.ExecContext(ctx,
+		`INSERT INTO access_tokens (jti, client_id, user_id, scope, issued_at, expires_at)
+		 VALUES (?, ?, ?, ?, ?, ?)`,
+		t.JTI, t.ClientID, t.UserID, t.Scope, nanos(t.IssuedAt), nanos(t.ExpiresAt))
+	return createErr(err)
+}
+
+func (r *accessTokenRepo) GetByJTI(ctx context.Context, jti string) (oauth.AccessToken, error) {
+	var (
+		t                    oauth.AccessToken
+		issued, expires      int64
+		revoked              sql.NullInt64
+	)
+	err := r.db.QueryRowContext(ctx,
+		`SELECT jti, client_id, user_id, scope, issued_at, expires_at, revoked_at
+		 FROM access_tokens WHERE jti = ?`, jti).
+		Scan(&t.JTI, &t.ClientID, &t.UserID, &t.Scope, &issued, &expires, &revoked)
+	if errors.Is(err, sql.ErrNoRows) {
+		return oauth.AccessToken{}, oauth.ErrNotFound
+	}
+	if err != nil {
+		return oauth.AccessToken{}, err
+	}
+	t.IssuedAt = fromNanos(issued)
+	t.ExpiresAt = fromNanos(expires)
+	if revoked.Valid {
+		t.RevokedAt = fromNanos(revoked.Int64)
+	}
+	return t, nil
+}
+
+// Revoke sets revoked_at eagerly and reports whether the token was active. It
+// is idempotent: revoking an unknown or already-revoked token is not an error.
+func (r *accessTokenRepo) Revoke(ctx context.Context, jti string, now time.Time) (bool, error) {
+	res, err := r.db.ExecContext(ctx,
+		`UPDATE access_tokens SET revoked_at = ? WHERE jti = ? AND revoked_at IS NULL`,
+		nanos(now), jti)
+	if err != nil {
+		return false, err
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return false, err
+	}
+	return n > 0, nil
+}
