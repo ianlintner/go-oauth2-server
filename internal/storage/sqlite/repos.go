@@ -183,6 +183,29 @@ func (r *refreshRepo) Create(ctx context.Context, t oauth.RefreshToken) error {
 	return createErr(err)
 }
 
+// GetByHash returns the token without consuming it, even when it has already
+// been rotated or its family revoked. The caller decides how to interpret
+// rotated or revoked state (a bound-and-scope check must see the original
+// record).
+func (r *refreshRepo) GetByHash(ctx context.Context, tokenHash string) (oauth.RefreshToken, error) {
+	var (
+		t       oauth.RefreshToken
+		expires int64
+	)
+	err := r.db.QueryRowContext(ctx,
+		`SELECT token_hash, family_id, client_id, user_id, scope, expires_at
+		 FROM refresh_tokens WHERE token_hash = ?`, tokenHash).
+		Scan(&t.TokenHash, &t.FamilyID, &t.ClientID, &t.UserID, &t.Scope, &expires)
+	if errors.Is(err, sql.ErrNoRows) {
+		return oauth.RefreshToken{}, oauth.ErrNotFound
+	}
+	if err != nil {
+		return oauth.RefreshToken{}, err
+	}
+	t.ExpiresAt = fromNanos(expires)
+	return t, nil
+}
+
 // Rotate latches the token in one statement that also checks the family is not
 // revoked, so a revoke can never interleave between "is it revoked?" and "mark
 // it rotated", and a token inserted into an already-revoked family is dead on

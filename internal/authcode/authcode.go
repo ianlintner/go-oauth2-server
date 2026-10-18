@@ -22,6 +22,7 @@ import (
 
 	"github.com/ianlintner/go-oauth2-server/internal/oauth"
 	"github.com/ianlintner/go-oauth2-server/internal/secret"
+	"github.com/ianlintner/go-oauth2-server/internal/token"
 )
 
 // Defaults. Codes are short-lived (RFC 6749 §4.1.2 recommends at most ten
@@ -38,10 +39,16 @@ const (
 const (
 	GrantAuthorizationCode = "authorization_code"
 	GrantClientCredentials = "client_credentials"
+	GrantRefreshToken      = "refresh_token"
 
 	MethodBasic = "client_secret_basic"
 	MethodPost  = "client_secret_post"
 )
+
+// DefaultRefreshTokenTTL is how long a minted refresh token stays usable when
+// the Service is not told otherwise. Refresh tokens are rotated on every use,
+// so the TTL bounds one family, not one token.
+const DefaultRefreshTokenTTL = 30 * 24 * time.Hour
 
 // ErrInvalidCredentials is returned for every failed resource-owner login:
 // unknown user, wrong password and empty input are indistinguishable.
@@ -59,6 +66,17 @@ type Config struct {
 
 	CodeTTL        time.Duration // DefaultCodeTTL when zero
 	AccessTokenTTL time.Duration // DefaultAccessTokenTTL when zero
+
+	// Tokens, when set, mints signed RFC 9068 access tokens (and their
+	// revocation/introspection records) instead of the legacy opaque
+	// placeholder. It is wired by the app; nil keeps the self-contained
+	// behaviour the shared contract tests rely on before the token-lifecycle
+	// slice is assembled.
+	Tokens *token.Service
+
+	// RefreshTokenTTL bounds a refresh-token rotation family (DefaultRefreshTokenTTL
+	// when zero). Ignored when Tokens is nil.
+	RefreshTokenTTL time.Duration
 }
 
 // Service is the authorization-code engine.
@@ -69,6 +87,9 @@ type Service struct {
 	insecure bool
 	codeTTL  time.Duration
 	tokenTTL time.Duration
+
+	tokens     *token.Service
+	refreshTTL time.Duration
 
 	// dummyHash is verified against when a client or user does not exist so
 	// that a missing identity costs the same as a wrong secret.
@@ -85,12 +106,17 @@ func New(cfg Config) (*Service, error) {
 		store: cfg.Store, clock: cfg.Clock, rnd: cfg.Random,
 		insecure: cfg.AllowInsecureRedirects,
 		codeTTL:  cfg.CodeTTL, tokenTTL: cfg.AccessTokenTTL,
+		tokens:     cfg.Tokens,
+		refreshTTL: cfg.RefreshTokenTTL,
 	}
 	if s.codeTTL <= 0 {
 		s.codeTTL = DefaultCodeTTL
 	}
 	if s.tokenTTL <= 0 {
 		s.tokenTTL = DefaultAccessTokenTTL
+	}
+	if s.refreshTTL <= 0 {
+		s.refreshTTL = DefaultRefreshTokenTTL
 	}
 	junk, err := cfg.Random.Bytes(16)
 	if err != nil {
@@ -114,10 +140,11 @@ type AuthRequest struct {
 
 // TokenResponse is a successful token response (RFC 6749 §5.1).
 type TokenResponse struct {
-	AccessToken string `json:"access_token"`
-	TokenType   string `json:"token_type"`
-	ExpiresIn   int64  `json:"expires_in"`
-	Scope       string `json:"scope,omitempty"`
+	AccessToken  string `json:"access_token"`
+	TokenType    string `json:"token_type"`
+	ExpiresIn    int64  `json:"expires_in"`
+	RefreshToken string `json:"refresh_token,omitempty"`
+	Scope        string `json:"scope,omitempty"`
 }
 
 // ---- authorization endpoint ----
@@ -240,7 +267,7 @@ func (s *Service) Token(ctx context.Context, authorization string, p oauth.Param
 	}
 	// Decide support before authenticating so an unsupported grant (including
 	// the prohibited password grant) is refused without touching credentials.
-	if grant != GrantAuthorizationCode && grant != GrantClientCredentials {
+	if grant != GrantAuthorizationCode && grant != GrantClientCredentials && grant != GrantRefreshToken {
 		return TokenResponse{}, oauth.UnsupportedGrantType("grant_type is not supported")
 	}
 
@@ -255,8 +282,10 @@ func (s *Service) Token(ctx context.Context, authorization string, p oauth.Param
 	switch grant {
 	case GrantAuthorizationCode:
 		return s.redeemCode(ctx, client, p)
+	case GrantRefreshToken:
+		return s.refreshToken(ctx, client, p)
 	default:
-		return s.clientCredentials(client, p)
+		return s.clientCredentials(ctx, client, p)
 	}
 }
 
@@ -304,10 +333,10 @@ func (s *Service) redeemCode(ctx context.Context, client oauth.Client, p oauth.P
 	if rec.CodeChallengeMethod != oauth.MethodS256 || !oauth.VerifyS256(rec.CodeChallenge, verifier) {
 		return TokenResponse{}, oauth.InvalidGrant("code_verifier does not match the code_challenge")
 	}
-	return s.issueAccessToken(rec.Scope)
+	return s.issueTokens(ctx, client.ID, rec.UserID, rec.Scope, true)
 }
 
-func (s *Service) clientCredentials(client oauth.Client, p oauth.Params) (TokenResponse, error) {
+func (s *Service) clientCredentials(ctx context.Context, client oauth.Client, p oauth.Params) (TokenResponse, error) {
 	if client.Public {
 		return TokenResponse{}, oauth.UnauthorizedClient("a public client cannot use the client credentials grant")
 	}
@@ -315,23 +344,137 @@ func (s *Service) clientCredentials(client oauth.Client, p oauth.Params) (TokenR
 	if err != nil {
 		return TokenResponse{}, err
 	}
-	return s.issueAccessToken(scope)
+	// The subject of a machine-to-machine token is the client itself (RFC 9068
+	// §2.2); no refresh token is issued for this grant.
+	return s.issueTokens(ctx, client.ID, client.ID, scope, false)
 }
 
-// issueAccessToken returns an opaque bearer token. Tokens are random,
-// unpersisted placeholders in this slice: signing, storage, introspection and
-// revocation belong to the token-lifecycle stage.
-func (s *Service) issueAccessToken(scope string) (TokenResponse, error) {
-	raw, err := s.rnd.Bytes(tokenBytes)
-	if err != nil {
+// refreshToken handles grant_type=refresh_token (RFC 6749 §6): authenticates
+// the refresh token against the presented client, enforces client binding and
+// scope narrowing, then rotates it and mints a replacement pair.
+func (s *Service) refreshToken(ctx context.Context, client oauth.Client, p oauth.Params) (TokenResponse, error) {
+	raw := p.Get("refresh_token")
+	if raw == "" {
+		return TokenResponse{}, oauth.InvalidRequest("refresh_token is required")
+	}
+	hash := hashToken(raw)
+
+	// Read the original record without consuming it so client binding and
+	// scope are checked before any rotation (a wrong client or an escalation
+	// must not burn the legitimate token).
+	rec, err := s.store.RefreshTokens().GetByHash(ctx, hash)
+	switch {
+	case errors.Is(err, oauth.ErrNotFound):
+		return TokenResponse{}, oauth.InvalidGrant("refresh token is invalid or expired")
+	case err != nil:
 		return TokenResponse{}, oauth.ServerError(err)
 	}
-	return TokenResponse{
-		AccessToken: base64.RawURLEncoding.EncodeToString(raw),
-		TokenType:   "Bearer",
-		ExpiresIn:   int64(s.tokenTTL / time.Second),
-		Scope:       scope,
-	}, nil
+
+	// Client binding: the token must belong to the presenting client.
+	if rec.ClientID != client.ID {
+		return TokenResponse{}, oauth.InvalidGrant("refresh token was not issued to this client")
+	}
+	if !s.clock.Now().Before(rec.ExpiresAt) {
+		return TokenResponse{}, oauth.InvalidGrant("refresh token is invalid or expired")
+	}
+
+	// Scope narrowing: the requested scope must be a subset of the original.
+	scope := rec.Scope
+	if requested := p.Get("scope"); requested != "" {
+		var err error
+		scope, err = narrowScope(rec.Scope, requested)
+		if err != nil {
+			return TokenResponse{}, err
+		}
+	}
+
+	// Consume (rotate) the presented token within its family. On replay the
+	// family is revoked and the grant refused (reuse detection).
+	rotated, err := s.rotateRefresh(ctx, hash, rec.FamilyID)
+	switch {
+	case errors.Is(err, oauth.ErrAlreadyConsumed):
+		return TokenResponse{}, oauth.InvalidGrant("refresh token is invalid")
+	case err != nil:
+		return TokenResponse{}, oauth.ServerError(err)
+	}
+	_ = rotated
+
+	return s.issueTokens(ctx, client.ID, rec.UserID, scope, true)
+}
+
+// issueTokens mints an access token and, when withRefresh is true, a refresh
+// token. When the Service has a token.Service it uses it for signed RFC 9068
+// access tokens; otherwise it falls back to the legacy opaque placeholder so
+// the pre-lifecycle contract tests keep passing.
+func (s *Service) issueTokens(ctx context.Context, clientID, subject, scope string, withRefresh bool) (TokenResponse, error) {
+	resp := TokenResponse{TokenType: "Bearer", Scope: scope}
+
+	if s.tokens != nil {
+		at, err := s.tokens.Issue(ctx, token.IssueParams{ClientID: clientID, Subject: subject, Scope: scope})
+		if err != nil {
+			return TokenResponse{}, err
+		}
+		resp.AccessToken = at.Value
+		resp.TokenType = at.TokenType
+		resp.ExpiresIn = int64(at.ExpiresAt.Sub(at.IssuedAt) / time.Second)
+	} else {
+		raw, err := s.rnd.Bytes(tokenBytes)
+		if err != nil {
+			return TokenResponse{}, oauth.ServerError(err)
+		}
+		resp.AccessToken = base64.RawURLEncoding.EncodeToString(raw)
+		resp.ExpiresIn = int64(s.tokenTTL / time.Second)
+	}
+
+	if withRefresh {
+		rt, err := s.mintRefreshToken(ctx, clientID, subject, scope)
+		if err != nil {
+			return TokenResponse{}, err
+		}
+		resp.RefreshToken = rt
+	}
+	return resp, nil
+}
+
+// mintRefreshToken creates an opaque refresh token and persists only its hash,
+// linked to a fresh rotation family.
+func (s *Service) mintRefreshToken(ctx context.Context, clientID, userID, scope string) (string, error) {
+	raw, err := s.rnd.Bytes(tokenBytes)
+	if err != nil {
+		return "", oauth.ServerError(err)
+	}
+	value := base64.RawURLEncoding.EncodeToString(raw)
+	fam, err := s.rnd.Bytes(16)
+	if err != nil {
+		return "", oauth.ServerError(err)
+	}
+	rec := oauth.RefreshToken{
+		TokenHash: hashToken(value),
+		FamilyID:  hex.EncodeToString(fam),
+		ClientID:  clientID,
+		UserID:    userID,
+		Scope:     scope,
+		ExpiresAt: s.clock.Now().Add(s.refreshTTL),
+	}
+	if err := s.store.RefreshTokens().Create(ctx, rec); err != nil {
+		return "", oauth.ServerError(err)
+	}
+	return value, nil
+}
+
+// rotateRefresh consumes a refresh token, revoking its family on replay. It
+// delegates to token.Service when present so the service owns family-replay
+// revocation; otherwise it uses the store directly.
+func (s *Service) rotateRefresh(ctx context.Context, hash, familyID string) (oauth.RefreshToken, error) {
+	if s.tokens != nil {
+		return s.tokens.RotateRefresh(ctx, hash, familyID)
+	}
+	return s.store.RefreshTokens().Rotate(ctx, hash, s.clock.Now())
+}
+
+func hashToken(code string) string {
+	sum := sha256.Sum256([]byte(code))
+	return hex.EncodeToString(sum[:])
 }
 
 // ---- client authentication ----
@@ -508,6 +651,26 @@ func validateScope(c oauth.Client, scope string) (string, error) {
 		}
 	}
 	return scope, nil
+}
+
+// narrowScope validates that every requested scope was already granted to the
+// original token. An empty or omitted request returns the original scope.
+func narrowScope(original, requested string) (string, error) {
+	allowed := make(map[string]bool)
+	for _, tok := range strings.Split(original, " ") {
+		if tok != "" {
+			allowed[tok] = true
+		}
+	}
+	for _, tok := range strings.Split(requested, " ") {
+		if tok == "" || !validScopeToken(tok) {
+			return "", oauth.InvalidScope("malformed scope")
+		}
+		if !allowed[tok] {
+			return "", oauth.InvalidScope("scope is not permitted")
+		}
+	}
+	return strings.TrimSpace(requested), nil
 }
 
 func validScopeToken(s string) bool {

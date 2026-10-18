@@ -594,7 +594,7 @@ func TestGrantTypeHandling(t *testing.T) {
 		{"unknown grant_type", auth, params(t, "grant_type", "urn:example:bogus"), oauth.CodeUnsupportedGrantType},
 		{"unknown grant_type without credentials", "", params(t, "grant_type", "urn:example:bogus"), oauth.CodeUnsupportedGrantType},
 		{"ROPC is not supported", "", params(t, "grant_type", "password", "username", "alice", "password", "test-only-password", "client_id", "client-a", "client_secret", "test-only-secret"), oauth.CodeUnsupportedGrantType},
-		{"refresh_token is not part of this slice", auth, params(t, "grant_type", "refresh_token", "refresh_token", "x"), oauth.CodeUnsupportedGrantType},
+		{"refresh_token with an unknown token rejects the grant", auth, params(t, "grant_type", "refresh_token", "refresh_token", "not-a-real-token"), oauth.CodeInvalidGrant},
 		{"implicit-style value", auth, params(t, "grant_type", "implicit"), oauth.CodeUnsupportedGrantType},
 	}
 	for _, tc := range tests {

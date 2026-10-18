@@ -110,6 +110,12 @@ type AuthCodeRepository interface {
 type RefreshTokenRepository interface {
 	// Create returns ErrConflict if the hash exists.
 	Create(ctx context.Context, t RefreshToken) error
+	// GetByHash returns the token without marking it rotated. It returns
+	// ErrNotFound when the token does not exist, and the record even when it
+	// has been rotated or its family revoked (the caller decides what that
+	// means). It lets a grant check client binding and scope against the
+	// original token before any consuming rotation.
+	GetByHash(ctx context.Context, tokenHash string) (RefreshToken, error)
 	// Rotate atomically marks the token rotated and returns it. If it was
 	// already rotated or its family revoked it returns ErrAlreadyConsumed;
 	// unknown hashes return ErrNotFound.
