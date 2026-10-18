@@ -17,6 +17,7 @@ import (
 	"crypto/rsa"
 	"crypto/sha256"
 	"encoding/base64"
+	"encoding/json"
 	"encoding/pem"
 	"errors"
 	"fmt"
@@ -140,6 +141,9 @@ func NewSigner(ks *KeySet, opts ...SignerOption) *Signer {
 	return s
 }
 
+// Kid returns the active key id of the signer's key set.
+func (s *Signer) Kid() string { return s.ks.kid }
+
 // Sign implements oauth.Signer.
 func (s *Signer) Sign(_ context.Context, claims map[string]any) (string, error) {
 	signer, err := jose.NewSigner(
@@ -157,10 +161,28 @@ func (s *Signer) Sign(_ context.Context, claims map[string]any) (string, error) 
 }
 
 // Verifier validates RS256 JWTs against the key set and returns their claims.
-type Verifier struct{ ks *KeySet }
+type Verifier struct {
+	ks  *KeySet
+	typ string // required JOSE typ header when non-empty
+}
+
+// VerifierOption customizes a Verifier.
+type VerifierOption func(*Verifier)
+
+// WithRequiredType requires the JOSE typ header to equal typ (RFC 9068 uses
+// "at+jwt"). A token with a different or missing typ fails verification.
+func WithRequiredType(typ string) VerifierOption {
+	return func(v *Verifier) { v.typ = typ }
+}
 
 // NewVerifier returns an oauth.Verifier for ks.
-func NewVerifier(ks *KeySet) *Verifier { return &Verifier{ks: ks} }
+func NewVerifier(ks *KeySet, opts ...VerifierOption) *Verifier {
+	v := &Verifier{ks: ks}
+	for _, o := range opts {
+		o(v)
+	}
+	return v
+}
 
 // Verify implements oauth.Verifier.
 func (v *Verifier) Verify(_ context.Context, token string) (map[string]any, error) {
@@ -170,6 +192,18 @@ func (v *Verifier) Verify(_ context.Context, token string) (map[string]any, erro
 	}
 	// Select the key by kid header when present; otherwise try every key.
 	hdr := obj.Signatures[0].Header
+	if v.typ != "" {
+		var typ string
+		switch t := hdr.ExtraHeaders[jose.HeaderType].(type) {
+		case jose.ContentType:
+			typ = string(t)
+		case string:
+			typ = t
+		}
+		if typ != v.typ {
+			return nil, fmt.Errorf("jwt: unexpected typ %q, want %q", typ, v.typ)
+		}
+	}
 	var key any
 	if hdr.KeyID != "" && hdr.KeyID != v.ks.kid {
 		return nil, errors.New("jwt: unknown kid")
@@ -191,3 +225,13 @@ func (ks *KeySet) JWKS() jose.JSONWebKeySet { return ks.jwks }
 
 // Kid returns the active key id.
 func (ks *KeySet) Kid() string { return ks.kid }
+
+// KeyID returns the active key id. It exists alongside Kid so a KeySet can
+// satisfy interfaces that name the accessor KeyID.
+func (ks *KeySet) KeyID() string { return ks.kid }
+
+// PublicJWKS returns the published JSON Web Key Set as raw JSON, for the
+// discovery endpoint (RFC 8414) via the token-lifecycle service.
+func (ks *KeySet) PublicJWKS() (json.RawMessage, error) {
+	return json.Marshal(ks.jwks)
+}
