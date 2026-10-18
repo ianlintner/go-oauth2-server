@@ -3,8 +3,9 @@
 # fail-closed configuration. It exercises what unit tests cannot: process exit
 # status and the shipped main wiring.
 #
-# This is NOT a conformance run. The skeleton implements no grant endpoints, so
-# no contract profile is claimed or executed here.
+# This is NOT a conformance run (see scripts/conformance-run.sh for that); it
+# only covers what unit tests cannot: process exit status and the shipped main
+# wiring.
 #
 # usage: scripts/sut-smoke.sh
 set -euo pipefail
@@ -91,8 +92,14 @@ wait_ready
 grep -q '"status":"ok"' "$work/health.json" || { echo "FAIL: /health body: $(cat "$work/health.json")" >&2; exit 1; }
 if grep -q conformance "$work/health.json"; then echo "FAIL: test-mode detail exposed in normal mode" >&2; exit 1; fi
 code="$(curl -s -o /dev/null -w '%{http_code}' -X POST "http://127.0.0.1:$port/oauth/token")"
-if [ "$code" != 404 ] && [ "$code" != 405 ]; then
-  echo "FAIL: /oauth/token answered $code; no grant flow exists yet" >&2
+if [ "$code" != 400 ]; then
+  echo "FAIL: POST /oauth/token without a body answered $code, want 400 invalid_request" >&2
+  exit 1
+fi
+# Credential entry is test-mode only: a normal start has no login surface.
+code="$(curl -s -o /dev/null -w '%{http_code}' "http://127.0.0.1:$port/auth/login")"
+if [ "$code" != 404 ]; then
+  echo "FAIL: /auth/login answered $code in normal mode, want 404" >&2
   exit 1
 fi
 kill "$pid"

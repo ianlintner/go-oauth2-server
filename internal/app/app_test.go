@@ -157,12 +157,27 @@ func TestStartsAndServesHealth(t *testing.T) {
 	}
 }
 
-func TestNoGrantEndpointsAreServed(t *testing.T) {
+// The OAuth endpoints are wired, but the credential-entry surface is the
+// contract's test-mode login only: outside conformance mode there is no login,
+// so no resource owner can authenticate and no code can be issued.
+func TestEndpointsAreWiredButLoginIsConformanceOnly(t *testing.T) {
 	r := boot(t, devEnv(t))
-	for _, path := range []string{"/oauth/token", "/oauth/authorize", "/login"} {
-		code, _, _ := getJSON(t, r.base+path)
-		if code != http.StatusNotFound && code != http.StatusMethodNotAllowed {
-			t.Errorf("GET %s = %d, want 404/405 (no grant flow yet)", path, code)
+
+	code, _, body := getJSON(t, r.base+"/oauth/authorize")
+	if code != http.StatusBadRequest || body["error"] != "invalid_request" {
+		t.Errorf("GET /oauth/authorize = %d %v, want 400 invalid_request", code, body)
+	}
+	code, _, _ = getJSON(t, r.base+"/oauth/token")
+	if code != http.StatusMethodNotAllowed {
+		t.Errorf("GET /oauth/token = %d, want 405", code)
+	}
+	code, _, body = getJSON(t, r.base+"/.well-known/oauth-authorization-server")
+	if code != http.StatusOK || body["issuer"] != "http://localhost:8080" {
+		t.Errorf("metadata = %d %v", code, body)
+	}
+	for _, path := range []string{"/auth/login", "/login"} {
+		if code, _, _ := getJSON(t, r.base+path); code != http.StatusNotFound {
+			t.Errorf("GET %s = %d, want 404 outside conformance mode", path, code)
 		}
 	}
 }

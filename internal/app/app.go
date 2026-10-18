@@ -14,10 +14,12 @@ import (
 	"os"
 	"time"
 
+	"github.com/ianlintner/go-oauth2-server/internal/authcode"
 	"github.com/ianlintner/go-oauth2-server/internal/config"
 	"github.com/ianlintner/go-oauth2-server/internal/conformance"
 	"github.com/ianlintner/go-oauth2-server/internal/oauth"
 	"github.com/ianlintner/go-oauth2-server/internal/server"
+	"github.com/ianlintner/go-oauth2-server/internal/session"
 	"github.com/ianlintner/go-oauth2-server/internal/storage/sqlite"
 )
 
@@ -91,6 +93,22 @@ func Run(ctx context.Context, opts Options) error {
 		log.Warn("conformance mode enabled: seeded test credentials are active; never use in production")
 	}
 
+	svc, err := authcode.New(authcode.Config{
+		Store:                  st,
+		Clock:                  oauth.SystemClock{},
+		Random:                 rnd,
+		AllowInsecureRedirects: cfg.AllowInsecureRedirects,
+	})
+	if err != nil {
+		closeListener()
+		return fmt.Errorf("authorization service: %w", err)
+	}
+	sessions, err := session.New([]byte(cfg.SessionSecret), oauth.SystemClock{}, cfg.CookieSecure)
+	if err != nil {
+		closeListener()
+		return fmt.Errorf("session manager: %w", err)
+	}
+
 	listener := opts.Listener
 	if listener == nil {
 		listener, err = net.Listen("tcp", cfg.Addr)
@@ -100,7 +118,14 @@ func Run(ctx context.Context, opts Options) error {
 	}
 
 	srv := &http.Server{
-		Handler:           server.New(server.Deps{Ping: st.Ping, Conformance: cfg.ConformanceMode}),
+		Handler: server.New(server.Deps{
+			Ping:        st.Ping,
+			Conformance: cfg.ConformanceMode,
+			Service:     svc,
+			Sessions:    sessions,
+			Issuer:      cfg.Issuer,
+			Logger:      log,
+		}),
 		ReadHeaderTimeout: 5 * time.Second,
 	}
 

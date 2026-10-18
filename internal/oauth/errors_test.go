@@ -37,6 +37,22 @@ func TestErrorStatusMapping(t *testing.T) {
 	}
 }
 
+// A few endpoints fix a status the code alone does not imply (the shared
+// contract answers an unknown client at the authorization endpoint with 401
+// but no Basic challenge, because no client authentication was attempted).
+func TestErrorStatusOverride(t *testing.T) {
+	e := oauth.InvalidClient("x", false).WithStatus(http.StatusUnauthorized)
+	if got := e.HTTPStatus(); got != http.StatusUnauthorized {
+		t.Fatalf("HTTPStatus() = %d, want 401", got)
+	}
+	if e.ClientAuthAttempted {
+		t.Fatal("an override must not pretend Basic authentication was attempted")
+	}
+	if got := oauth.InvalidClient("x", false).HTTPStatus(); got != http.StatusBadRequest {
+		t.Fatalf("override leaked into a fresh error: %d", got)
+	}
+}
+
 func TestErrorWrapsCauseWithoutExposingItInDescription(t *testing.T) {
 	cause := errors.New("sql: connection refused to db.internal:5432")
 	e := oauth.ServerError(cause)

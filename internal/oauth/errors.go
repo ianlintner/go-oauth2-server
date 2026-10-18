@@ -38,7 +38,10 @@ type Error struct {
 	// authenticated through the Authorization header (RFC 6749 §5.2 requires
 	// a 401 with a WWW-Authenticate challenge in that case).
 	ClientAuthAttempted bool
-	Cause               error
+	// Status, when nonzero, replaces the code's default HTTP status. Set it
+	// only through WithStatus.
+	Status int
+	Cause  error
 }
 
 // Error implements the error interface.
@@ -54,6 +57,9 @@ func (e *Error) Unwrap() error { return e.Cause }
 
 // HTTPStatus returns the RFC-mandated status for the error code.
 func (e *Error) HTTPStatus() int {
+	if e.Status != 0 {
+		return e.Status
+	}
 	switch e.Code {
 	case CodeInvalidClient:
 		if e.ClientAuthAttempted {
@@ -71,6 +77,15 @@ func (e *Error) HTTPStatus() int {
 	default:
 		return http.StatusBadRequest
 	}
+}
+
+// WithStatus returns a copy of e that answers with status instead of the
+// code's default. It does not change the WWW-Authenticate behavior, which
+// still depends only on ClientAuthAttempted.
+func (e *Error) WithStatus(status int) *Error {
+	c := *e
+	c.Status = status
+	return &c
 }
 
 func newError(code Code, description string) *Error {

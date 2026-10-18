@@ -1,0 +1,22 @@
+id: local.authorize.duplicate-code-challenge-method
+title: A repeated code_challenge_method (S256 then plain) is rejected
+requirements: [RFC6749-3.1-duplicate-parameters]
+profile: core
+status: stable
+note: |
+  A PKCE downgrade attempt through parameter pollution.
+  The query is carried in the request path because the contract's request.query
+  record cannot express a repeated key. A server that reads "the first value"
+  (or the last) acts on attacker-chosen input; it must refuse the whole request
+  before reading any value, and must not redirect to anything. Only the
+  non-redirect 400 is asserted: the error body format of an unredirectable
+  authorization error is not fixed by RFC 6749 (the Rust reference renders a
+  text page, Go a JSON object), so asserting it would test rendering, not
+  security.
+steps:
+  - id: authorize
+    request:
+      method: GET
+      path: "/oauth/authorize?response_type=code&client_id=client-a&redirect_uri=https%3A%2F%2Fclient.example%2Fcallback&state=s-dup&code_challenge=E9Melhoa2OwvFrEMTJguCHaoeK1t8URWbuGJSstw-cM&code_challenge_method=S256&code_challenge_method=plain"
+    expect:
+      status: 400
