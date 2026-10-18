@@ -479,6 +479,15 @@ func hashToken(code string) string {
 
 // ---- client authentication ----
 
+// AuthenticateClient authenticates the caller of a client-authenticated
+// endpoint (token, introspection, revocation) using exactly one method and
+// enforcing the method the client registered. It is the exported form of the
+// token endpoint's authentication used by the token-lifecycle endpoints, which
+// need the client identity for owner binding.
+func (s *Service) AuthenticateClient(ctx context.Context, authorization string, p oauth.Params) (oauth.Client, error) {
+	return s.authenticateClient(ctx, authorization, p)
+}
+
 // authenticateClient authenticates the caller of the token endpoint using
 // exactly one method, and enforces the method the client registered.
 func (s *Service) authenticateClient(ctx context.Context, authorization string, p oauth.Params) (oauth.Client, error) {

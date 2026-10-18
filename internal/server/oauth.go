@@ -13,6 +13,7 @@ import (
 	"github.com/ianlintner/go-oauth2-server/internal/authcode"
 	"github.com/ianlintner/go-oauth2-server/internal/oauth"
 	"github.com/ianlintner/go-oauth2-server/internal/session"
+	"github.com/ianlintner/go-oauth2-server/internal/token"
 )
 
 // maxBodyBytes bounds every request body this package reads. OAuth form
@@ -22,6 +23,7 @@ const maxBodyBytes = 64 << 10
 type oauthHandlers struct {
 	svc          *authcode.Service
 	sessions     *session.Manager
+	tokens       *token.Service
 	issuer       string
 	loginEnabled bool
 	log          *slog.Logger
@@ -32,7 +34,7 @@ func newOAuthHandlers(d Deps) *oauthHandlers {
 	if lg == nil {
 		lg = slog.Default()
 	}
-	return &oauthHandlers{svc: d.Service, sessions: d.Sessions, issuer: d.Issuer, loginEnabled: d.Conformance, log: lg}
+	return &oauthHandlers{svc: d.Service, sessions: d.Sessions, tokens: d.Tokens, issuer: d.Issuer, loginEnabled: d.Conformance, log: lg}
 }
 
 // fail logs the internal cause of a server_error and writes the typed error.
@@ -247,10 +249,15 @@ func (h *oauthHandlers) metadata(w http.ResponseWriter, _ *http.Request) {
 		"issuer":                                         h.issuer,
 		"authorization_endpoint":                         base + "/oauth/authorize",
 		"token_endpoint":                                 base + "/oauth/token",
+		"introspection_endpoint":                         base + "/oauth/introspect",
+		"revocation_endpoint":                            base + "/oauth/revoke",
+		"jwks_uri":                                       base + "/.well-known/jwks.json",
 		"response_types_supported":                       []string{"code"},
-		"grant_types_supported":                          []string{authcode.GrantAuthorizationCode, authcode.GrantClientCredentials},
+		"grant_types_supported":                          []string{authcode.GrantAuthorizationCode, authcode.GrantRefreshToken, authcode.GrantClientCredentials},
 		"code_challenge_methods_supported":               []string{oauth.MethodS256},
 		"token_endpoint_auth_methods_supported":          []string{authcode.MethodBasic, authcode.MethodPost, "none"},
+		"introspection_endpoint_auth_methods_supported":  []string{authcode.MethodBasic, authcode.MethodPost, "none"},
+		"revocation_endpoint_auth_methods_supported":     []string{authcode.MethodBasic, authcode.MethodPost, "none"},
 		"authorization_response_iss_parameter_supported": true,
 	}
 	w.Header().Set("Content-Type", "application/json")

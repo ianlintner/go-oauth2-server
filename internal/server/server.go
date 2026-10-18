@@ -15,6 +15,7 @@ import (
 	"github.com/ianlintner/go-oauth2-server/internal/authcode"
 	"github.com/ianlintner/go-oauth2-server/internal/health"
 	"github.com/ianlintner/go-oauth2-server/internal/session"
+	"github.com/ianlintner/go-oauth2-server/internal/token"
 )
 
 // Deps are the collaborators the router needs.
@@ -31,6 +32,11 @@ type Deps struct {
 	Service  *authcode.Service
 	Sessions *session.Manager
 	Issuer   string
+
+	// Tokens enables the token-lifecycle endpoints (introspection,
+	// revocation, JWKS) and discovery extension. When Service/Sessions are
+	// supplied it must also be non-nil, or those endpoints answer 500.
+	Tokens *token.Service
 
 	// Logger receives internal error causes, which are never sent to clients.
 	Logger *slog.Logger
@@ -57,8 +63,11 @@ func New(d Deps) http.Handler {
 	if d.Service != nil && d.Sessions != nil {
 		h := newOAuthHandlers(d)
 		mux.HandleFunc("GET /.well-known/oauth-authorization-server", h.metadata)
+		mux.HandleFunc("GET /.well-known/jwks.json", h.jwks)
 		mux.HandleFunc("/oauth/authorize", h.authorize)
 		mux.HandleFunc("/oauth/token", h.token)
+		mux.HandleFunc("POST /oauth/introspect", h.introspect)
+		mux.HandleFunc("POST /oauth/revoke", h.revoke)
 		if d.Conformance {
 			mux.HandleFunc("GET /auth/login", h.loginForm)
 			mux.HandleFunc("POST /auth/login", h.loginSubmit)
