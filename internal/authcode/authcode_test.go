@@ -594,7 +594,7 @@ func TestGrantTypeHandling(t *testing.T) {
 		{"unknown grant_type", auth, params(t, "grant_type", "urn:example:bogus"), oauth.CodeUnsupportedGrantType},
 		{"unknown grant_type without credentials", "", params(t, "grant_type", "urn:example:bogus"), oauth.CodeUnsupportedGrantType},
 		{"ROPC is not supported", "", params(t, "grant_type", "password", "username", "alice", "password", "test-only-password", "client_id", "client-a", "client_secret", "test-only-secret"), oauth.CodeUnsupportedGrantType},
-		{"refresh_token is not part of this slice", auth, params(t, "grant_type", "refresh_token", "refresh_token", "x"), oauth.CodeUnsupportedGrantType},
+		{"refresh_token with an unknown token rejects the grant", auth, params(t, "grant_type", "refresh_token", "refresh_token", "not-a-real-token"), oauth.CodeInvalidGrant},
 		{"implicit-style value", auth, params(t, "grant_type", "implicit"), oauth.CodeUnsupportedGrantType},
 	}
 	for _, tc := range tests {
@@ -602,6 +602,57 @@ func TestGrantTypeHandling(t *testing.T) {
 			_, err := e.token(tc.auth, tc.p)
 			wantCode(t, err, tc.want)
 		})
+	}
+}
+
+func hashTokenHex(code string) string {
+	sum := sha256.Sum256([]byte(code))
+	return hex.EncodeToString(sum[:])
+}
+
+func TestRefreshRotationKeepsReplacementInTheSameFamily(t *testing.T) {
+	e := newEnv(t)
+	auth := basic("client-a", "test-only-secret")
+	ctx := context.Background()
+
+	// Mint an initial refresh token through the authorization-code grant.
+	c := e.issue(t, "client-a", callback)
+	first, err := e.token(auth, codeParams(t, c))
+	if err != nil || first.RefreshToken == "" {
+		t.Fatalf("first token = %+v, err = %v", first, err)
+	}
+
+	// Rotate it: the replacement must share the family so a replay of the old
+	// token revokes the replacement too (OAuth 2.0 Security BCP / RFC 6819
+	// §5.2.2.3, RFC 9700 §2.1.5 lineage).
+	second, err := e.token(auth, params(t, "grant_type", "refresh_token", "refresh_token", first.RefreshToken))
+	if err != nil || second.RefreshToken == "" {
+		t.Fatalf("rotation token = %+v, err = %v", second, err)
+	}
+	if second.RefreshToken == first.RefreshToken {
+		t.Fatal("rotation must issue a distinct refresh token")
+	}
+
+	// Replay the original token: reuse detection must refuse it AND revoke its
+	// family, which includes the replacement.
+	_, err = e.token(auth, params(t, "grant_type", "refresh_token", "refresh_token", first.RefreshToken))
+	wantCode(t, err, oauth.CodeInvalidGrant)
+
+	// The replacement must be dead too: it shared the revoked family.
+	_, err = e.token(auth, params(t, "grant_type", "refresh_token", "refresh_token", second.RefreshToken))
+	wantCode(t, err, oauth.CodeInvalidGrant)
+
+	// Reassert the family lineage directly: both hashes resolve to one family.
+	r1, err := e.store.RefreshTokens().GetByHash(ctx, hashTokenHex(first.RefreshToken))
+	if err != nil {
+		t.Fatalf("get first hash: %v", err)
+	}
+	r2, err := e.store.RefreshTokens().GetByHash(ctx, hashTokenHex(second.RefreshToken))
+	if err != nil {
+		t.Fatalf("get second hash: %v", err)
+	}
+	if r1.FamilyID != r2.FamilyID {
+		t.Fatalf("replacement family %q != original family %q; rotation broke lineage", r2.FamilyID, r1.FamilyID)
 	}
 }
 

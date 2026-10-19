@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
-# Runs the shared contract's core profile (plus this repo's supplementary
-# scenarios) against a locally started system under test.
+# Runs the shared contract's core and token-lifecycle profiles (plus this
+# repo's supplementary scenarios) against a locally started system under test.
 #
 # usage: scripts/conformance-run.sh [CONTRACT_DIR]            (default: .contract)
 #
@@ -104,4 +104,11 @@ pnpm --dir "$contract_dir/runner" exec tsx src/cli.ts run \
   --base-url "http://127.0.0.1:${port}" \
   --scenarios "$work/scenarios" \
   --profile core \
+  --implementation "${sut}-oauth2-server"
+
+echo "== contract runner: token-lifecycle profile against the ${sut} server (port ${port}) =="
+pnpm --dir "$contract_dir/runner" exec tsx src/cli.ts run \
+  --base-url "http://127.0.0.1:${port}" \
+  --scenarios "$work/scenarios" \
+  --profile token-lifecycle \
   --implementation "${sut}-oauth2-server"

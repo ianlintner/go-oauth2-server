@@ -17,10 +17,12 @@ import (
 	"github.com/ianlintner/go-oauth2-server/internal/authcode"
 	"github.com/ianlintner/go-oauth2-server/internal/config"
 	"github.com/ianlintner/go-oauth2-server/internal/conformance"
+	"github.com/ianlintner/go-oauth2-server/internal/jwt"
 	"github.com/ianlintner/go-oauth2-server/internal/oauth"
 	"github.com/ianlintner/go-oauth2-server/internal/server"
 	"github.com/ianlintner/go-oauth2-server/internal/session"
 	"github.com/ianlintner/go-oauth2-server/internal/storage/sqlite"
+	"github.com/ianlintner/go-oauth2-server/internal/token"
 )
 
 // shutdownTimeout bounds graceful shutdown so a stuck connection cannot hang
@@ -93,11 +95,37 @@ func Run(ctx context.Context, opts Options) error {
 		log.Warn("conformance mode enabled: seeded test credentials are active; never use in production")
 	}
 
+	// The token-lifecycle service signs RFC 9068 access tokens with the
+	// persisted signing key and serves introspection, revocation and JWKS.
+	// Production refuses to invent a signing key; development/test fall back
+	// to an ephemeral one only when the file carries placeholder material.
+	ks, err := jwt.PrepareKeySet(cfg.SigningKeyFile, cfg.Environment == config.EnvProduction)
+	if err != nil {
+		closeListener()
+		return fmt.Errorf("signing keys: %w", err)
+	}
+	signer := jwt.NewSigner(ks, jwt.WithType(token.AccessTokenType))
+	verifier := jwt.NewVerifier(ks, jwt.WithRequiredType(token.AccessTokenType))
+	tokens, err := token.New(token.Config{
+		Issuer:   cfg.Issuer,
+		Signer:   signer,
+		Verifier: verifier,
+		Keys:     ks,
+		Store:    st,
+		Clock:    oauth.SystemClock{},
+		Random:   rnd,
+	})
+	if err != nil {
+		closeListener()
+		return fmt.Errorf("token service: %w", err)
+	}
+
 	svc, err := authcode.New(authcode.Config{
 		Store:                  st,
 		Clock:                  oauth.SystemClock{},
 		Random:                 rnd,
 		AllowInsecureRedirects: cfg.AllowInsecureRedirects,
+		Tokens:                 tokens,
 	})
 	if err != nil {
 		closeListener()
@@ -124,6 +152,7 @@ func Run(ctx context.Context, opts Options) error {
 			Service:     svc,
 			Sessions:    sessions,
 			Issuer:      cfg.Issuer,
+			Tokens:      tokens,
 			Logger:      log,
 		}),
 		ReadHeaderTimeout: 5 * time.Second,

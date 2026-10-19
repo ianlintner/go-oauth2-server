@@ -186,3 +186,70 @@ func TestApplyIsAllOrNothing(t *testing.T) {
 		t.Fatalf("alice after failed Apply: %v, want ErrNotFound", err)
 	}
 }
+
+// A client that seeds no scopes must be given the reference default scope so
+// the token-lifecycle scenarios that request `openid`/`read` resolve, matching
+// the Rust reference DEFAULT_CLIENT_SCOPE. A client that seeds its own scopes
+// keeps them verbatim.
+func TestApplyDefaultsEmptyClientScopes(t *testing.T) {
+	seed, err := conformance.LoadSeed(writeSeed(t, contractExample))
+	if err != nil {
+		t.Fatal(err)
+	}
+	st, err := sqlite.Open(sqlite.MemoryDSN)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+	ctx := context.Background()
+
+	if err := conformance.Apply(ctx, st, oauth.CryptoRandom{}, seed); err != nil {
+		t.Fatalf("Apply: %v", err)
+	}
+
+	c, err := st.Clients().Get(ctx, "client-a")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := c.Scopes; len(got) != 2 || got[0] != "openid" || got[1] != "read" {
+		t.Fatalf("scopes = %v, want [openid read]", got)
+	}
+}
+
+// A client that seeds its own scopes keeps them verbatim, untouched by the
+// default.
+func TestApplyKeepsExplicitClientScopes(t *testing.T) {
+	const seedBody = `
+issuer: http://localhost:8080
+clients:
+  - client_id: scoped
+    client_secret: s
+    token_endpoint_auth_method: client_secret_basic
+    redirect_uris: [https://c/cb]
+    scopes: [photos, offline_access]
+users:
+  - username: u
+    password: p
+`
+	seed, err := conformance.LoadSeed(writeSeed(t, seedBody))
+	if err != nil {
+		t.Fatal(err)
+	}
+	st, err := sqlite.Open(sqlite.MemoryDSN)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+	ctx := context.Background()
+
+	if err := conformance.Apply(ctx, st, oauth.CryptoRandom{}, seed); err != nil {
+		t.Fatalf("Apply: %v", err)
+	}
+	c, err := st.Clients().Get(ctx, "scoped")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := c.Scopes; len(got) != 2 || got[0] != "photos" || got[1] != "offline_access" {
+		t.Fatalf("scopes = %v, want [photos offline_access] verbatim", got)
+	}
+}

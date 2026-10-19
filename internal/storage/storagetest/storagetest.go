@@ -41,6 +41,7 @@ func Run(t *testing.T, f Factory) {
 		{"Users", testUsers},
 		{"AuthCodes", testAuthCodes},
 		{"RefreshTokens", testRefreshTokens},
+		{"AccessTokens", testAccessTokens},
 		{"Transactions", testTransactions},
 		{"Persistence", testPersistence},
 		{"Lifecycle", testLifecycle},
@@ -90,6 +91,17 @@ func sampleCode(hash string) oauth.AuthorizationCode {
 
 func sampleRefresh(hash, family string) oauth.RefreshToken {
 	return oauth.RefreshToken{TokenHash: hash, FamilyID: family, ClientID: "client-a", UserID: "user-1", Scope: "openid", ExpiresAt: ref.Add(24 * time.Hour)}
+}
+
+func sampleAccessToken(jti string) oauth.AccessToken {
+	return oauth.AccessToken{
+		JTI:       jti,
+		ClientID:  "client-a",
+		UserID:    "user-1",
+		Scope:     "openid profile",
+		IssuedAt:  ref,
+		ExpiresAt: ref.Add(time.Hour),
+	}
 }
 
 func mustNoErr(t *testing.T, err error, what string) {
@@ -445,6 +457,64 @@ func testRefreshTokens(t *testing.T, f Factory) {
 	})
 }
 
+func testAccessTokens(t *testing.T, f Factory) {
+	ctx := context.Background()
+
+	t.Run("create and read back round-trips", func(t *testing.T) {
+		s := newStore(t, f)
+		want := sampleAccessToken("j1")
+		mustNoErr(t, s.AccessTokens().Create(ctx, want), "create")
+		got, err := s.AccessTokens().GetByJTI(ctx, "j1")
+		mustNoErr(t, err, "get")
+		if got.JTI != want.JTI || got.ClientID != want.ClientID || got.UserID != want.UserID ||
+			got.Scope != want.Scope || !got.IssuedAt.Equal(want.IssuedAt) || !got.ExpiresAt.Equal(want.ExpiresAt) ||
+			!got.RevokedAt.IsZero() {
+			t.Fatalf("token mismatch\n got: %+v\nwant: %+v", got, want)
+		}
+	})
+
+	t.Run("unknown jti is not found", func(t *testing.T) {
+		s := newStore(t, f)
+		_, err := s.AccessTokens().GetByJTI(ctx, "nope")
+		wantErr(t, err, oauth.ErrNotFound, "get unknown")
+	})
+
+	t.Run("duplicate jti conflicts", func(t *testing.T) {
+		s := newStore(t, f)
+		mustNoErr(t, s.AccessTokens().Create(ctx, sampleAccessToken("j1")), "create")
+		wantErr(t, s.AccessTokens().Create(ctx, sampleAccessToken("j1")), oauth.ErrConflict, "duplicate")
+	})
+
+	t.Run("revoke marks active token revoked once", func(t *testing.T) {
+		s := newStore(t, f)
+		mustNoErr(t, s.AccessTokens().Create(ctx, sampleAccessToken("j1")), "create")
+		revoked, err := s.AccessTokens().Revoke(ctx, "j1", ref)
+		mustNoErr(t, err, "revoke")
+		if !revoked {
+			t.Fatal("first revoke reported no change")
+		}
+		got, err := s.AccessTokens().GetByJTI(ctx, "j1")
+		mustNoErr(t, err, "get after revoke")
+		if got.RevokedAt.IsZero() || !got.RevokedAt.Equal(ref) {
+			t.Fatalf("RevokedAt = %v, want %v", got.RevokedAt, ref)
+		}
+		revoked, err = s.AccessTokens().Revoke(ctx, "j1", ref.Add(time.Minute))
+		mustNoErr(t, err, "second revoke")
+		if revoked {
+			t.Fatal("second revoke reported a change on an already-revoked token")
+		}
+	})
+
+	t.Run("revoking an unknown jti is not an error", func(t *testing.T) {
+		s := newStore(t, f)
+		revoked, err := s.AccessTokens().Revoke(ctx, "ghost", ref)
+		mustNoErr(t, err, "revoke unknown")
+		if revoked {
+			t.Fatal("revoking an unknown jti reported a change")
+		}
+	})
+}
+
 var errAbort = errors.New("abort transaction")
 
 func testTransactions(t *testing.T, f Factory) {
@@ -629,6 +699,7 @@ func testPersistence(t *testing.T, f Factory) {
 		mustNoErr(t, s1.Users().Create(ctx, sampleUser("user-1", "alice")), "create user")
 		mustNoErr(t, s1.AuthCodes().Create(ctx, sampleCode("h1")), "create code")
 		mustNoErr(t, s1.RefreshTokens().Create(ctx, sampleRefresh("r1", "fam-1")), "create refresh")
+		mustNoErr(t, s1.AccessTokens().Create(ctx, sampleAccessToken("j1")), "create access")
 		mustNoErr(t, s1.Close(), "close")
 
 		s2 := open(t)
@@ -642,6 +713,11 @@ func testPersistence(t *testing.T, f Factory) {
 		mustNoErr(t, err, "code after reopen")
 		_, err = s2.RefreshTokens().Rotate(ctx, "r1", ref)
 		mustNoErr(t, err, "refresh after reopen")
+		at, err := s2.AccessTokens().GetByJTI(ctx, "j1")
+		mustNoErr(t, err, "access after reopen")
+		if at.JTI != "j1" || at.ClientID != "client-a" {
+			t.Fatalf("access token mismatch after reopen: %+v", at)
+		}
 	})
 
 	t.Run("single-use state survives restart", func(t *testing.T) {
@@ -659,6 +735,9 @@ func testPersistence(t *testing.T, f Factory) {
 		mustNoErr(t, err, "rotate before restart")
 		_, err = s1.RefreshTokens().RevokeFamily(ctx, "fam-2", ref)
 		mustNoErr(t, err, "revoke before restart")
+		mustNoErr(t, s1.AccessTokens().Create(ctx, sampleAccessToken("j1")), "create access")
+		_, err = s1.AccessTokens().Revoke(ctx, "j1", ref)
+		mustNoErr(t, err, "revoke access before restart")
 		mustNoErr(t, s1.Close(), "close")
 
 		s2 := open(t)
@@ -669,6 +748,11 @@ func testPersistence(t *testing.T, f Factory) {
 		wantErr(t, err, oauth.ErrAlreadyConsumed, "rotation replay after restart")
 		_, err = s2.RefreshTokens().Rotate(ctx, "r2", ref)
 		wantErr(t, err, oauth.ErrAlreadyConsumed, "revoked family after restart")
+		at, err := s2.AccessTokens().GetByJTI(ctx, "j1")
+		mustNoErr(t, err, "access after restart")
+		if at.RevokedAt.IsZero() {
+			t.Fatal("access token revocation did not survive restart")
+		}
 	})
 
 	t.Run("a rolled-back transaction is not persisted", func(t *testing.T) {
