@@ -105,6 +105,20 @@ func TestPrepareKeySetProductionRefusesPlaceholder(t *testing.T) {
 	}
 }
 
+func TestPrepareKeySetRejectsMangledKeyEvenInNonProduction(t *testing.T) {
+	// A file that is neither a parseable RSA key nor the literal placeholder
+	// sentinel must fail loudly even in development/test, so a mangled or
+	// mistyped real key is never silently swapped for an ephemeral one.
+	dir := t.TempDir()
+	path := filepath.Join(dir, "signing.key")
+	if err := os.WriteFile(path, []byte("truncated real key material"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := PrepareKeySet(path, false); err == nil {
+		t.Fatal("expected a mangled non-placeholder key to be rejected, not silently regenerated")
+	}
+}
+
 func TestPrepareKeySetParsesPEM(t *testing.T) {
 	key, _ := rsa.GenerateKey(rand.Reader, 2048)
 	pem := marshalRSAPrivateKeyPEM(t, key)

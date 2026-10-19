@@ -22,6 +22,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"strings"
 
 	"github.com/go-jose/go-jose/v4"
 )
@@ -49,20 +50,30 @@ func PrepareKeySet(path string, production bool) (*KeySet, error) {
 
 	if key, loadErr := parseRSAPrivateKey(raw); loadErr == nil {
 		return NewKeySet(key), nil
+	} else if !isPlaceholder(raw) || production {
+		// Not a parseable RSA key and not the placeholder sentinel. Either we
+		// are in production (never invent a key), or the file is meant to hold
+		// a real key but is mangled/wrong — fail loudly so a truncated or
+		// mistyped key is never silently replaced with an ephemeral one whose
+		// JWKS diverges from the published keys on the next restart.
+		return nil, loadErr
 	}
 
-	// Not a parseable RSA key. Only non-production may fall back to an
-	// ephemeral generated key; the contract smoke/conformance scripts write
-	// literal "placeholder-key-material" here precisely because it is not a
+	// Only the literal placeholder sentinel in a non-production environment
+	// falls through to an ephemeral generated key: the contract smoke/conformance
+	// scripts write "placeholder-key-material" precisely because it is not a
 	// key, and the runner still needs a working JWKS.
-	if production {
-		return nil, errors.New("jwt: signing key file does not contain a valid RSA private key; refusing to generate one in production")
-	}
 	key, err := rsa.GenerateKey(rand.Reader, rsaBits)
 	if err != nil {
 		return nil, fmt.Errorf("jwt: generate ephemeral signing key: %w", err)
 	}
 	return NewKeySet(key), nil
+}
+
+// isPlaceholder reports whether raw is the sentinel placeholder the conformance
+// runner writes in place of a real signing key.
+func isPlaceholder(raw []byte) bool {
+	return strings.TrimSpace(string(raw)) == "placeholder-key-material"
 }
 
 // NewKeySet builds a KeySet from an existing RSA private key.
