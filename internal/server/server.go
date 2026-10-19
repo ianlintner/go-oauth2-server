@@ -63,6 +63,7 @@ func New(d Deps) http.Handler {
 	if d.Service != nil && d.Sessions != nil {
 		h := newOAuthHandlers(d)
 		mux.HandleFunc("GET /.well-known/oauth-authorization-server", h.metadata)
+		mux.HandleFunc("GET /.well-known/openid-configuration", h.openidConfiguration)
 		mux.HandleFunc("GET /.well-known/jwks.json", h.jwks)
 		mux.HandleFunc("/oauth/authorize", h.authorize)
 		mux.HandleFunc("/oauth/token", h.token)

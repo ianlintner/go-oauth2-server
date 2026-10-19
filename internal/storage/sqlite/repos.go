@@ -119,10 +119,10 @@ type authCodeRepo struct{ db execer }
 func (r *authCodeRepo) Create(ctx context.Context, c oauth.AuthorizationCode) error {
 	_, err := r.db.ExecContext(ctx,
 		`INSERT INTO auth_codes (code_hash, client_id, user_id, redirect_uri, scope,
-		                         code_challenge, code_challenge_method, expires_at)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+		                         code_challenge, code_challenge_method, nonce, expires_at)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		c.CodeHash, c.ClientID, c.UserID, c.RedirectURI, c.Scope,
-		c.CodeChallenge, c.CodeChallengeMethod, nanos(c.ExpiresAt))
+		c.CodeChallenge, c.CodeChallengeMethod, c.Nonce, nanos(c.ExpiresAt))
 	return createErr(err)
 }
 
@@ -138,10 +138,10 @@ func (r *authCodeRepo) Consume(ctx context.Context, codeHash string, now time.Ti
 		`UPDATE auth_codes SET consumed_at = ?
 		 WHERE code_hash = ? AND consumed_at IS NULL
 		 RETURNING code_hash, client_id, user_id, redirect_uri, scope,
-		           code_challenge, code_challenge_method, expires_at`,
+		           code_challenge, code_challenge_method, nonce, expires_at`,
 		nanos(now), codeHash).
 		Scan(&c.CodeHash, &c.ClientID, &c.UserID, &c.RedirectURI, &c.Scope,
-			&c.CodeChallenge, &c.CodeChallengeMethod, &expires)
+			&c.CodeChallenge, &c.CodeChallengeMethod, &c.Nonce, &expires)
 	if errors.Is(err, sql.ErrNoRows) {
 		return oauth.AuthorizationCode{}, r.missOrConsumed(ctx, `SELECT 1 FROM auth_codes WHERE code_hash = ?`, codeHash)
 	}
@@ -270,9 +270,9 @@ func (r *accessTokenRepo) Create(ctx context.Context, t oauth.AccessToken) error
 
 func (r *accessTokenRepo) GetByJTI(ctx context.Context, jti string) (oauth.AccessToken, error) {
 	var (
-		t                    oauth.AccessToken
-		issued, expires      int64
-		revoked              sql.NullInt64
+		t               oauth.AccessToken
+		issued, expires int64
+		revoked         sql.NullInt64
 	)
 	err := r.db.QueryRowContext(ctx,
 		`SELECT jti, client_id, user_id, scope, issued_at, expires_at, revoked_at

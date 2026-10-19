@@ -107,13 +107,15 @@ func Run(ctx context.Context, opts Options) error {
 	signer := jwt.NewSigner(ks, jwt.WithType(token.AccessTokenType))
 	verifier := jwt.NewVerifier(ks, jwt.WithRequiredType(token.AccessTokenType))
 	tokens, err := token.New(token.Config{
-		Issuer:   cfg.Issuer,
-		Signer:   signer,
-		Verifier: verifier,
-		Keys:     ks,
-		Store:    st,
-		Clock:    oauth.SystemClock{},
-		Random:   rnd,
+		Issuer:     cfg.Issuer,
+		Signer:     signer,
+		Verifier:   verifier,
+		Keys:       ks,
+		IDSigner:   jwt.NewSigner(ks),
+		IDVerifier: jwt.NewVerifier(ks),
+		Store:      st,
+		Clock:      oauth.SystemClock{},
+		Random:     rnd,
 	})
 	if err != nil {
 		closeListener()

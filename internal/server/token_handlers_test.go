@@ -338,3 +338,20 @@ func TestTokenEndpointIssuesSignedAccessToken(t *testing.T) {
 		t.Fatalf("access token is not a JWS: %q", at)
 	}
 }
+
+func TestOpenIDConfigurationPublishesDiscoveryMembers(t *testing.T) {
+	e := newTokenEnv(t)
+	rec := e.get("/.well-known/openid-configuration")
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d", rec.Code)
+	}
+	m := jsonBody(t, rec)
+	if m["issuer"] != issuer || m["userinfo_endpoint"] != issuer+"/oauth/userinfo" || m["jwks_uri"] != issuer+"/.well-known/jwks.json" {
+		t.Fatalf("doc = %v", m)
+	}
+	for _, k := range []string{"subject_types_supported", "id_token_signing_alg_values_supported"} {
+		if m[k] == nil {
+			t.Fatalf("missing %s", k)
+		}
+	}
+}

@@ -244,8 +244,23 @@ func isFormContent(r *http.Request) bool {
 // metadata publishes RFC 8414 authorization server metadata. The issuer is the
 // exact configured value, the same one placed in every RFC 9207 iss parameter.
 func (h *oauthHandlers) metadata(w http.ResponseWriter, _ *http.Request) {
+	writeJSON(w, http.StatusOK, h.metadataDoc())
+}
+
+// openidConfiguration publishes OIDC Discovery 1.0 provider metadata: the RFC
+// 8414 document plus the members OIDC Discovery §3 requires of a provider.
+func (h *oauthHandlers) openidConfiguration(w http.ResponseWriter, _ *http.Request) {
+	doc := h.metadataDoc()
+	doc["subject_types_supported"] = []string{"public"}
+	doc["id_token_signing_alg_values_supported"] = []string{"RS256"}
+	doc["scopes_supported"] = []string{"openid"}
+	doc["claims_supported"] = []string{"iss", "sub", "aud", "iat", "exp", "nonce"}
+	writeJSON(w, http.StatusOK, doc)
+}
+
+func (h *oauthHandlers) metadataDoc() map[string]any {
 	base := strings.TrimRight(h.issuer, "/")
-	doc := map[string]any{
+	return map[string]any{
 		"issuer":                                         h.issuer,
 		"authorization_endpoint":                         base + "/oauth/authorize",
 		"token_endpoint":                                 base + "/oauth/token",
@@ -261,7 +276,4 @@ func (h *oauthHandlers) metadata(w http.ResponseWriter, _ *http.Request) {
 		"revocation_endpoint_auth_methods_supported":     []string{authcode.MethodBasic, authcode.MethodPost, "none"},
 		"authorization_response_iss_parameter_supported": true,
 	}
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(http.StatusOK)
-	_ = json.NewEncoder(w).Encode(doc)
 }

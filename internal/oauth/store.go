@@ -51,6 +51,7 @@ type AuthorizationCode struct {
 	Scope               string
 	CodeChallenge       string
 	CodeChallengeMethod string
+	Nonce               string // OIDC nonce from the authorization request, "" if none
 	ExpiresAt           time.Time
 }
 
