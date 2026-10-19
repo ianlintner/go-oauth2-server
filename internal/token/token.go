@@ -59,6 +59,11 @@ type Config struct {
 	Verifier oauth.Verifier
 	Keys     KeySet
 
+	// IDSigner and IDVerifier sign and verify OIDC id_tokens (typ "JWT") with
+	// the same key set. Optional: without them IssueIDToken fails closed.
+	IDSigner   Signer
+	IDVerifier oauth.Verifier
+
 	Store  oauth.Store
 	Clock  oauth.Clock
 	Random oauth.Random
@@ -73,6 +78,8 @@ type Service struct {
 	signer   Signer
 	verifier oauth.Verifier
 	keys     KeySet
+	idSigner Signer
+	idVer    oauth.Verifier
 	store    oauth.Store
 	clock    oauth.Clock
 	rnd      oauth.Random
@@ -99,6 +106,8 @@ func New(cfg Config) (*Service, error) {
 		signer:   cfg.Signer,
 		verifier: cfg.Verifier,
 		keys:     cfg.Keys,
+		idSigner: cfg.IDSigner,
+		idVer:    cfg.IDVerifier,
 		store:    cfg.Store,
 		clock:    cfg.Clock,
 		rnd:      cfg.Random,
@@ -435,4 +444,54 @@ func (s *Service) JWKS() (json.RawMessage, error) {
 		return nil, fmt.Errorf("token: no key set configured")
 	}
 	return s.keys.PublicJWKS()
+}
+
+// IDTokenParams names the subject, audience client and nonce of an id_token.
+type IDTokenParams struct {
+	ClientID string
+	Subject  string
+	Nonce    string // echoed verbatim when non-empty (OIDC Core 3.1.3.6)
+}
+
+// IssueIDToken signs an OIDC Core 2 id_token: iss, sub, aud, iat, exp and,
+// when the authorization request carried one, the nonce.
+func (s *Service) IssueIDToken(ctx context.Context, p IDTokenParams) (string, error) {
+	if s.idSigner == nil {
+		return "", oauth.ServerError(errors.New("token: id_token signer not configured"))
+	}
+	if p.ClientID == "" || p.Subject == "" {
+		return "", oauth.InvalidRequest("client and subject are required")
+	}
+	now := s.clock.Now()
+	claims := map[string]any{
+		"iss": s.issuer,
+		"sub": p.Subject,
+		"aud": p.ClientID,
+		"iat": now.Unix(),
+		"exp": now.Add(s.ttl).Unix(),
+	}
+	if p.Nonce != "" {
+		claims["nonce"] = p.Nonce
+	}
+	idt, err := s.idSigner.Sign(ctx, claims)
+	if err != nil {
+		return "", oauth.ServerError(err)
+	}
+	return idt, nil
+}
+
+// VerifyIDTokenHint validates the signature of an id_token_hint and returns
+// its claims. Expiry is deliberately not enforced (RP-Initiated Logout 2).
+func (s *Service) VerifyIDTokenHint(ctx context.Context, idt string) (map[string]any, error) {
+	if s.idVer == nil {
+		return nil, oauth.ServerError(errors.New("token: id_token verifier not configured"))
+	}
+	claims, err := s.idVer.Verify(ctx, idt)
+	if err != nil {
+		return nil, oauth.InvalidRequest("id_token_hint is invalid")
+	}
+	if iss, _ := claims["iss"].(string); iss != s.issuer {
+		return nil, oauth.InvalidRequest("id_token_hint issuer mismatch")
+	}
+	return claims, nil
 }

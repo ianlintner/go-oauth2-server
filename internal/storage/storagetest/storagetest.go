@@ -256,7 +256,7 @@ func testAuthCodes(t *testing.T, f Factory) {
 		mustNoErr(t, err, "consume")
 		if got != (oauth.AuthorizationCode{
 			CodeHash: want.CodeHash, ClientID: want.ClientID, UserID: want.UserID, RedirectURI: want.RedirectURI,
-			Scope: want.Scope, CodeChallenge: want.CodeChallenge, CodeChallengeMethod: want.CodeChallengeMethod,
+			Scope: want.Scope, CodeChallenge: want.CodeChallenge, CodeChallengeMethod: want.CodeChallengeMethod, Nonce: want.Nonce,
 			ExpiresAt: got.ExpiresAt,
 		}) || !got.ExpiresAt.Equal(want.ExpiresAt) {
 			t.Fatalf("code mismatch\n got: %+v\nwant: %+v", got, want)

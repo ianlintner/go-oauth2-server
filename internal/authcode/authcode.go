@@ -136,6 +136,7 @@ type AuthRequest struct {
 	State         string
 	Scope         string
 	CodeChallenge string
+	Nonce         string // OIDC nonce, echoed in the id_token
 }
 
 // TokenResponse is a successful token response (RFC 6749 §5.1).
@@ -145,6 +146,7 @@ type TokenResponse struct {
 	ExpiresIn    int64  `json:"expires_in"`
 	RefreshToken string `json:"refresh_token,omitempty"`
 	Scope        string `json:"scope,omitempty"`
+	IDToken      string `json:"id_token,omitempty"`
 }
 
 // ---- authorization endpoint ----
@@ -222,7 +224,7 @@ func (s *Service) ValidateRequest(c oauth.Client, redirectURI string, p oauth.Pa
 	}
 	return AuthRequest{
 		Client: c, RedirectURI: redirectURI, State: p.Get("state"),
-		Scope: scope, CodeChallenge: challenge,
+		Scope: scope, CodeChallenge: challenge, Nonce: p.Get("nonce"),
 	}, nil
 }
 
@@ -243,6 +245,7 @@ func (s *Service) IssueCode(ctx context.Context, req AuthRequest, userID string)
 		Scope:               req.Scope,
 		CodeChallenge:       req.CodeChallenge,
 		CodeChallengeMethod: oauth.MethodS256,
+		Nonce:               req.Nonce,
 		ExpiresAt:           s.clock.Now().Add(s.codeTTL),
 	}
 	if err := s.store.AuthCodes().Create(ctx, rec); err != nil {
@@ -333,7 +336,29 @@ func (s *Service) redeemCode(ctx context.Context, client oauth.Client, p oauth.P
 	if rec.CodeChallengeMethod != oauth.MethodS256 || !oauth.VerifyS256(rec.CodeChallenge, verifier) {
 		return TokenResponse{}, oauth.InvalidGrant("code_verifier does not match the code_challenge")
 	}
-	return s.issueTokens(ctx, client.ID, rec.UserID, rec.Scope, true, "")
+	resp, err := s.issueTokens(ctx, client.ID, rec.UserID, rec.Scope, true, "")
+	if err != nil {
+		return TokenResponse{}, err
+	}
+	// OIDC Core 3.1.3.3: an id_token accompanies the response only when the
+	// granted scope includes openid.
+	if s.tokens != nil && hasScope(rec.Scope, "openid") {
+		idt, err := s.tokens.IssueIDToken(ctx, token.IDTokenParams{ClientID: client.ID, Subject: rec.UserID, Nonce: rec.Nonce})
+		if err != nil {
+			return TokenResponse{}, err
+		}
+		resp.IDToken = idt
+	}
+	return resp, nil
+}
+
+func hasScope(scope, want string) bool {
+	for _, f := range strings.Fields(scope) {
+		if f == want {
+			return true
+		}
+	}
+	return false
 }
 
 func (s *Service) clientCredentials(ctx context.Context, client oauth.Client, p oauth.Params) (TokenResponse, error) {
