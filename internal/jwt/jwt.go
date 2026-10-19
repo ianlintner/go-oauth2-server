@@ -123,7 +123,6 @@ func x509PublicKeyDER(pub *rsa.PublicKey) []byte {
 type Signer struct {
 	ks  *KeySet
 	typ string
-	iss string
 }
 
 // SignerOption customizes a Signer.
