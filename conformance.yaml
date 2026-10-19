@@ -1,0 +1,26 @@
+# Conformance claim for this implementation, read by the language-neutral
+# `oauth2-conformance` runner contract
+# (https://github.com/ianlintner/oauth2-conformance).
+#
+# Pinned contract commit: 469bd864530af550a872e1d76bbd040da3b44647
+# (also pinned in conformance-contract.yaml; the manifest schema's `contract`
+# field is a full 40-char SHA before the 0.2.0 tag exists, per ROADMAP.md flow
+# step 2).
+#
+# Every profile listed under `profiles` is exercised by
+# `scripts/conformance-run.sh`. A stable scenario that fails in a claimed
+# profile fails that run.
+#
+# NOTE (token-lifecycle): as of this commit the token-lifecycle profile is
+# claimed but a subset of its stable scenarios still fail. They are not gluing
+# gaps but behaviour gaps owned by the parent token-lifecycle/OIDC baseline
+# slice, recorded on the board rather than implemented here:
+#   - bearer/* and metadata.required-members need a `/oauth/userinfo`
+#     protected-resource endpoint (RFC 6750) plus a `userinfo_endpoint`
+#     metadata member (OIDC baseline; out of this card's "No OIDC" scope).
+#   - revocation.refresh-token and revocation.hint-mismatch need RFC 7009
+#     refresh-token revocation; the token service's Revoke currently revokes
+#     only access tokens.
+implementation: go-oauth2-server
+contract: 469bd864530af550a872e1d76bbd040da3b44647
+profiles: [core, token-lifecycle]

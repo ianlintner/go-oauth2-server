@@ -60,6 +60,12 @@ type User struct {
 
 var algPattern = regexp.MustCompile(`^(RS|ES|PS|HS)[0-9]{3}$`)
 
+// defaultClientScope is applied to a client that seeds no scopes so the
+// token-lifecycle scenarios requesting `openid`/`read` resolve. It mirrors the
+// Rust reference's DEFAULT_CLIENT_SCOPE; a client that seeds its own scopes
+// keeps them verbatim.
+var defaultClientScope = []string{"openid", "read"}
+
 var validGrantTypes = map[string]bool{
 	"authorization_code": true,
 	"refresh_token":      true,
@@ -224,12 +230,16 @@ func (c Client) validate() error {
 func Apply(ctx context.Context, st oauth.Store, rnd oauth.Random, seed *Seed) error {
 	return st.WithTx(ctx, func(ctx context.Context, tx oauth.Repositories) error {
 		for _, c := range seed.Clients {
+			scopes := c.Scopes
+			if len(scopes) == 0 {
+				scopes = defaultClientScope
+			}
 			rec := oauth.Client{
 				ID:           c.ClientID,
 				Public:       c.Public,
 				AuthMethod:   c.TokenEndpointAuthMethod,
 				RedirectURIs: c.RedirectURIs,
-				Scopes:       c.Scopes,
+				Scopes:       scopes,
 				GrantTypes:   c.GrantTypes,
 			}
 			if c.Name != nil {
