@@ -249,6 +249,7 @@ func (h *oauthHandlers) metadata(w http.ResponseWriter, _ *http.Request) {
 		"issuer":                                         h.issuer,
 		"authorization_endpoint":                         base + "/oauth/authorize",
 		"token_endpoint":                                 base + "/oauth/token",
+		"userinfo_endpoint":                              base + "/oauth/userinfo",
 		"introspection_endpoint":                         base + "/oauth/introspect",
 		"revocation_endpoint":                            base + "/oauth/revoke",
 		"jwks_uri":                                       base + "/.well-known/jwks.json",

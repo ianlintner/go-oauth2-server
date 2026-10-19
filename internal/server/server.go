@@ -68,6 +68,7 @@ func New(d Deps) http.Handler {
 		mux.HandleFunc("/oauth/token", h.token)
 		mux.HandleFunc("POST /oauth/introspect", h.introspect)
 		mux.HandleFunc("POST /oauth/revoke", h.revoke)
+		mux.HandleFunc("/oauth/userinfo", h.userinfo)
 		if d.Conformance {
 			mux.HandleFunc("GET /auth/login", h.loginForm)
 			mux.HandleFunc("POST /auth/login", h.loginSubmit)
