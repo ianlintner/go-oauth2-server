@@ -14,6 +14,7 @@ package token
 
 import (
 	"context"
+	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
@@ -356,12 +357,34 @@ func (s *Service) Introspect(ctx context.Context, token string) (TokenInfo, erro
 	}, nil
 }
 
-// Revoke revokes an access token on behalf of clientID (RFC 7009). Owner
-// binding: only the client that holds the token may revoke it. A wrong owner,
-// an unknown token, or a malformed token is not an error and not a revoke — the
-// endpoint still answers 200 (RFC 7009 §2.1 forbids leaking whether the token
-// belonged to another client).
-func (s *Service) Revoke(ctx context.Context, tokenValue, clientID string) error {
+// Revoke revokes a token on behalf of clientID (RFC 7009). The token may be an
+// access token (a signed JWT resolved by its jti) or a refresh token (an opaque
+// value looked up by its SHA-256 hash, then revoking its whole rotation family).
+// tokenTypeHint is only a hint (RFC 7009 §2.1): the caller still searches the
+// token by both shapes, so a mismatched hint never hides a token that exists in
+// the other family. Owner binding: only the client that holds the token may
+// revoke it. A wrong owner, an unknown token, or a malformed token is not an
+// error and not a revoke — the endpoint still answers 200 (RFC 7009 §2.1
+// forbids leaking whether the token belonged to another client).
+func (s *Service) Revoke(ctx context.Context, tokenValue, clientID, tokenTypeHint string) error {
+	// Refresh-token path: opaque value looked up by hash, revoking its family.
+	// A refresh token is never a JWT, so this lookup is tried for every value
+	// regardless of the hint (a wrong access_token hint must still find it).
+	if rec, err := s.store.RefreshTokens().GetByHash(ctx, hashRefresh(tokenValue)); err == nil {
+		if clientID != "" && rec.ClientID == clientID {
+			_, rerr := s.store.RefreshTokens().RevokeFamily(ctx, rec.FamilyID, s.clock.Now())
+			if rerr != nil {
+				return oauth.ServerError(rerr)
+			}
+		}
+		// Unknown family is not an error; wrong owner is not an error and not a
+		// revoke. Either way the endpoint answers 200 without leaking existence.
+		return nil
+	} else if !errors.Is(err, oauth.ErrNotFound) {
+		return oauth.ServerError(err)
+	}
+
+	// Access-token path: resolve the JWT and revoke by jti.
 	c, err := s.resolve(ctx, tokenValue)
 	if err != nil {
 		return nil
@@ -377,6 +400,14 @@ func (s *Service) Revoke(ctx context.Context, tokenValue, clientID string) error
 		return oauth.ServerError(err)
 	}
 	return nil
+}
+
+// hashRefresh is the SHA-256 (hex) of a refresh-token value, matching the hash
+// the issuing flow (authcode.mintRefreshToken) persists, so a presented value
+// resolves to its stored record.
+func hashRefresh(v string) string {
+	sum := sha256.Sum256([]byte(v))
+	return hex.EncodeToString(sum[:])
 }
 
 // RotateRefresh rotates a refresh token within a known family. On replay

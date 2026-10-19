@@ -4,7 +4,9 @@ import (
 	"context"
 	"crypto/rand"
 	"crypto/rsa"
+	"crypto/sha256"
 	"encoding/base64"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"strings"
@@ -238,7 +240,7 @@ func TestVerifyAccessTokenRejectsRevoked(t *testing.T) {
 	svc, _ := newService(t, ks, newStore(t))
 	res := issue(t, svc, "c", "u", "read")
 
-	if err := svc.Revoke(context.Background(), res.Value, "c"); err != nil {
+	if err := svc.Revoke(context.Background(), res.Value, "c", ""); err != nil {
 		t.Fatalf("revoke: %v", err)
 	}
 	if _, err := svc.VerifyAccessToken(context.Background(), res.Value); err == nil {
@@ -273,7 +275,7 @@ func TestIntrospectReturnsInactiveRevoked(t *testing.T) {
 	ks := newKeySet(t)
 	svc, _ := newService(t, ks, newStore(t))
 	res := issue(t, svc, "c", "u", "read")
-	if err := svc.Revoke(context.Background(), res.Value, "c"); err != nil {
+	if err := svc.Revoke(context.Background(), res.Value, "c", ""); err != nil {
 		t.Fatalf("revoke: %v", err)
 	}
 
@@ -304,7 +306,7 @@ func TestRevokeOwnerBinding(t *testing.T) {
 	res := issue(t, svc, "client-a", "u", "read")
 
 	// A different client must not revoke it.
-	if err := svc.Revoke(context.Background(), res.Value, "client-b"); err != nil {
+	if err := svc.Revoke(context.Background(), res.Value, "client-b", ""); err != nil {
 		t.Fatalf("revoke by wrong client errored: %v", err)
 	}
 	if info, _ := svc.Introspect(context.Background(), res.Value); !info.Active {
@@ -312,7 +314,7 @@ func TestRevokeOwnerBinding(t *testing.T) {
 	}
 
 	// The owning client revokes it.
-	if err := svc.Revoke(context.Background(), res.Value, "client-a"); err != nil {
+	if err := svc.Revoke(context.Background(), res.Value, "client-a", ""); err != nil {
 		t.Fatalf("revoke by owner errored: %v", err)
 	}
 	if info, _ := svc.Introspect(context.Background(), res.Value); info.Active {
@@ -323,8 +325,130 @@ func TestRevokeOwnerBinding(t *testing.T) {
 func TestRevokeUnknownTokenIsNotAnError(t *testing.T) {
 	ks := newKeySet(t)
 	svc, _ := newService(t, ks, newStore(t))
-	if err := svc.Revoke(context.Background(), "garbage", "c"); err != nil {
+	if err := svc.Revoke(context.Background(), "garbage", "c", ""); err != nil {
 		t.Fatalf("revoking an unknown token errored: %v", err)
+	}
+}
+
+// refreshHash mirrors authcode.hashToken (SHA-256 of the raw value, hex) so the
+// test can persist a refresh token exactly as the issuing flow does.
+func refreshHash(v string) string {
+	sum := sha256.Sum256([]byte(v))
+	return hex.EncodeToString(sum[:])
+}
+
+// seedRefresh persists a refresh token with the given raw value and family,
+// owned by clientID, and returns the raw value.
+func seedRefresh(t *testing.T, st oauth.Store, value, familyID, clientID string, exp time.Time) string {
+	t.Helper()
+	rec := oauth.RefreshToken{
+		TokenHash: refreshHash(value),
+		FamilyID:  familyID,
+		ClientID:  clientID,
+		UserID:    "u",
+		Scope:     "read",
+		ExpiresAt: exp,
+	}
+	if err := st.RefreshTokens().Create(context.Background(), rec); err != nil {
+		t.Fatalf("create refresh token: %v", err)
+	}
+	return value
+}
+
+func TestRevokeRefreshTokenByHint(t *testing.T) {
+	ks := newKeySet(t)
+	st := newStore(t)
+	svc, clk := newService(t, ks, st)
+
+	raw := seedRefresh(t, st, "opaque-refresh-value", "fam-1", "client-a", clk.t.Add(time.Hour))
+
+	// The owning client revokes it with a correct refresh_token hint.
+	if err := svc.Revoke(context.Background(), raw, "client-a", "refresh_token"); err != nil {
+		t.Fatalf("revoke refresh token errored: %v", err)
+	}
+
+	// The family is dead: a redeem attempt (Rotate) on any member now fails.
+	if _, err := svc.RotateRefresh(context.Background(), refreshHash(raw), "fam-1"); !errors.Is(err, oauth.ErrAlreadyConsumed) {
+		t.Fatalf("rotate after family revoke = %v, want ErrAlreadyConsumed", err)
+	}
+}
+
+func TestRevokeRefreshTokenHintMismatchStillRevokes(t *testing.T) {
+	ks := newKeySet(t)
+	st := newStore(t)
+	svc, clk := newService(t, ks, st)
+
+	raw := seedRefresh(t, st, "opaque-refresh-value-2", "fam-2", "client-a", clk.t.Add(time.Hour))
+
+	// A wrong access_token hint must not prevent lookup and revocation (RFC 7009
+	// §2.1: the hint is only a hint; the server searches the token regardless).
+	if err := svc.Revoke(context.Background(), raw, "client-a", "access_token"); err != nil {
+		t.Fatalf("revoke with mismatched hint errored: %v", err)
+	}
+	if _, err := svc.RotateRefresh(context.Background(), refreshHash(raw), "fam-2"); !errors.Is(err, oauth.ErrAlreadyConsumed) {
+		t.Fatalf("rotate after mismatched-hint revoke = %v, want ErrAlreadyConsumed", err)
+	}
+}
+
+func TestRevokeRefreshTokenRepeatedIsIdempotent(t *testing.T) {
+	ks := newKeySet(t)
+	st := newStore(t)
+	svc, clk := newService(t, ks, st)
+
+	raw := seedRefresh(t, st, "opaque-refresh-value-3", "fam-3", "client-a", clk.t.Add(time.Hour))
+
+	if err := svc.Revoke(context.Background(), raw, "client-a", "refresh_token"); err != nil {
+		t.Fatalf("first revoke: %v", err)
+	}
+	// A second revoke of the same (now revoked) token is not an error and does
+	// not leak its prior state.
+	if err := svc.Revoke(context.Background(), raw, "client-a", "refresh_token"); err != nil {
+		t.Fatalf("repeated revoke: %v", err)
+	}
+}
+
+func TestRevokeRefreshTokenWrongOwnerDoesNotRevoke(t *testing.T) {
+	ks := newKeySet(t)
+	st := newStore(t)
+	svc, clk := newService(t, ks, st)
+
+	raw := seedRefresh(t, st, "opaque-refresh-value-4", "fam-4", "client-a", clk.t.Add(time.Hour))
+
+	// A different client cannot revoke it, and it is not an error (no leak).
+	if err := svc.Revoke(context.Background(), raw, "client-b", "refresh_token"); err != nil {
+		t.Fatalf("revoke by wrong client errored: %v", err)
+	}
+	// The family is still live: the owner can still rotate.
+	if _, err := svc.RotateRefresh(context.Background(), refreshHash(raw), "fam-4"); err != nil {
+		t.Fatalf("wrong-client revoke incorrectly killed the family: %v", err)
+	}
+}
+
+func TestRevokeRefreshTokenUnknownValueIsNotAnError(t *testing.T) {
+	ks := newKeySet(t)
+	svc, _ := newService(t, ks, newStore(t))
+	if err := svc.Revoke(context.Background(), "no-such-refresh-token", "client-a", "refresh_token"); err != nil {
+		t.Fatalf("revoking an unknown refresh token errored: %v", err)
+	}
+}
+
+func TestRevokeRefreshTokenRevokesActiveDescendants(t *testing.T) {
+	ks := newKeySet(t)
+	st := newStore(t)
+	svc, clk := newService(t, ks, st)
+
+	// A family with two members: the original (already rotated) and an active
+	// descendant that has not yet been consumed.
+	parent := seedRefresh(t, st, "opaque-parent", "fam-dec", "client-a", clk.t.Add(time.Hour))
+	child := seedRefresh(t, st, "opaque-child", "fam-dec", "client-a", clk.t.Add(time.Hour))
+
+	// Revoking the parent must revoke the whole family, so the still-active
+	// child becomes unredeemable (family replay invariant, RFC 7009 §2.1).
+	if err := svc.Revoke(context.Background(), parent, "client-a", "refresh_token"); err != nil {
+		t.Fatalf("revoke parent: %v", err)
+	}
+	if _, err := svc.RotateRefresh(context.Background(), refreshHash(child), "fam-dec"); !errors.Is(err, oauth.ErrAlreadyConsumed) {
+		t.Fatalf("active descendant still redeemable after family revoke: %v", err)
 	}
 }
 

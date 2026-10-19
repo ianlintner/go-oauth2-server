@@ -104,7 +104,7 @@ func (h *oauthHandlers) revoke(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if err := h.tokens.Revoke(r.Context(), tokenValue, client.ID); err != nil {
+	if err := h.tokens.Revoke(r.Context(), tokenValue, client.ID, p.Get("token_type_hint")); err != nil {
 		h.fail(w, r, err)
 		return
 	}
