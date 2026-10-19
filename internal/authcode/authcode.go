@@ -333,7 +333,7 @@ func (s *Service) redeemCode(ctx context.Context, client oauth.Client, p oauth.P
 	if rec.CodeChallengeMethod != oauth.MethodS256 || !oauth.VerifyS256(rec.CodeChallenge, verifier) {
 		return TokenResponse{}, oauth.InvalidGrant("code_verifier does not match the code_challenge")
 	}
-	return s.issueTokens(ctx, client.ID, rec.UserID, rec.Scope, true)
+	return s.issueTokens(ctx, client.ID, rec.UserID, rec.Scope, true, "")
 }
 
 func (s *Service) clientCredentials(ctx context.Context, client oauth.Client, p oauth.Params) (TokenResponse, error) {
@@ -346,7 +346,7 @@ func (s *Service) clientCredentials(ctx context.Context, client oauth.Client, p 
 	}
 	// The subject of a machine-to-machine token is the client itself (RFC 9068
 	// §2.2); no refresh token is issued for this grant.
-	return s.issueTokens(ctx, client.ID, client.ID, scope, false)
+	return s.issueTokens(ctx, client.ID, client.ID, scope, false, "")
 }
 
 // refreshToken handles grant_type=refresh_token (RFC 6749 §6): authenticates
@@ -397,16 +397,19 @@ func (s *Service) refreshToken(ctx context.Context, client oauth.Client, p oauth
 	case err != nil:
 		return TokenResponse{}, oauth.ServerError(err)
 	}
-	_ = rotated
 
-	return s.issueTokens(ctx, client.ID, rec.UserID, scope, true)
+	// The replacement shares the rotated token's family so a replayed member
+	// revokes the whole lineage, including this new token (RFC 6819 §5.2.2.3 /
+	// RFC 9700 §2.1.5 cascade revocation).
+	return s.issueTokens(ctx, client.ID, rec.UserID, scope, true, rotated.FamilyID)
 }
 
 // issueTokens mints an access token and, when withRefresh is true, a refresh
-// token. When the Service has a token.Service it uses it for signed RFC 9068
-// access tokens; otherwise it falls back to the legacy opaque placeholder so
-// the pre-lifecycle contract tests keep passing.
-func (s *Service) issueTokens(ctx context.Context, clientID, subject, scope string, withRefresh bool) (TokenResponse, error) {
+// token. familyID, when non-empty, is the rotation family the minted refresh
+// token joins (empty mints a fresh family). When the Service has a token.Service
+// it uses it for signed RFC 9068 access tokens; otherwise it falls back to the
+// legacy opaque placeholder so the pre-lifecycle contract tests keep passing.
+func (s *Service) issueTokens(ctx context.Context, clientID, subject, scope string, withRefresh bool, familyID string) (TokenResponse, error) {
 	resp := TokenResponse{TokenType: "Bearer", Scope: scope}
 
 	if s.tokens != nil {
@@ -427,7 +430,7 @@ func (s *Service) issueTokens(ctx context.Context, clientID, subject, scope stri
 	}
 
 	if withRefresh {
-		rt, err := s.mintRefreshToken(ctx, clientID, subject, scope)
+		rt, err := s.mintRefreshToken(ctx, clientID, subject, scope, familyID)
 		if err != nil {
 			return TokenResponse{}, err
 		}
@@ -436,21 +439,26 @@ func (s *Service) issueTokens(ctx context.Context, clientID, subject, scope stri
 	return resp, nil
 }
 
-// mintRefreshToken creates an opaque refresh token and persists only its hash,
-// linked to a fresh rotation family.
-func (s *Service) mintRefreshToken(ctx context.Context, clientID, userID, scope string) (string, error) {
+// mintRefreshToken creates an opaque refresh token and persists only its hash.
+// When familyID is non-empty the token joins that existing rotation family
+// (used on rotation so a replay revokes the whole lineage); otherwise a fresh
+// family is minted (a new grant lineage).
+func (s *Service) mintRefreshToken(ctx context.Context, clientID, userID, scope, familyID string) (string, error) {
 	raw, err := s.rnd.Bytes(tokenBytes)
 	if err != nil {
 		return "", oauth.ServerError(err)
 	}
 	value := base64.RawURLEncoding.EncodeToString(raw)
-	fam, err := s.rnd.Bytes(16)
-	if err != nil {
-		return "", oauth.ServerError(err)
+	if familyID == "" {
+		fam, err := s.rnd.Bytes(16)
+		if err != nil {
+			return "", oauth.ServerError(err)
+		}
+		familyID = hex.EncodeToString(fam)
 	}
 	rec := oauth.RefreshToken{
 		TokenHash: hashToken(value),
-		FamilyID:  hex.EncodeToString(fam),
+		FamilyID:  familyID,
 		ClientID:  clientID,
 		UserID:    userID,
 		Scope:     scope,
@@ -464,12 +472,17 @@ func (s *Service) mintRefreshToken(ctx context.Context, clientID, userID, scope 
 
 // rotateRefresh consumes a refresh token, revoking its family on replay. It
 // delegates to token.Service when present so the service owns family-replay
-// revocation; otherwise it uses the store directly.
+// revocation; otherwise it uses the store directly and revokes the family
+// itself on replay (mirroring token.Service.RotateRefresh).
 func (s *Service) rotateRefresh(ctx context.Context, hash, familyID string) (oauth.RefreshToken, error) {
 	if s.tokens != nil {
 		return s.tokens.RotateRefresh(ctx, hash, familyID)
 	}
-	return s.store.RefreshTokens().Rotate(ctx, hash, s.clock.Now())
+	t, err := s.store.RefreshTokens().Rotate(ctx, hash, s.clock.Now())
+	if errors.Is(err, oauth.ErrAlreadyConsumed) && familyID != "" {
+		_, _ = s.store.RefreshTokens().RevokeFamily(ctx, familyID, s.clock.Now())
+	}
+	return t, err
 }
 
 func hashToken(code string) string {
