@@ -77,12 +77,15 @@ func New(d Deps) http.Handler {
 		mux.HandleFunc("POST /oauth/introspect", h.introspect)
 		mux.HandleFunc("POST /oauth/revoke", h.revoke)
 		mux.HandleFunc("/oauth/userinfo", h.userinfo)
-		mux.HandleFunc("/oauth/device_authorization", h.deviceAuthorization)
 		mux.HandleFunc("/oauth/par", h.par)
 		if d.RegistrationEnabled {
 			mux.HandleFunc("/connect/register", h.register)
 		}
 		if d.Conformance {
+			// The device grant needs the verification page, which needs a
+			// resource-owner login; both exist only here, so the grant is
+			// fail-closed (404, not advertised) elsewhere.
+			mux.HandleFunc("/oauth/device_authorization", h.deviceAuthorization)
 			mux.HandleFunc("/oauth/device/verify", h.deviceVerify)
 			mux.HandleFunc("GET /auth/login", h.loginForm)
 			mux.HandleFunc("POST /auth/login", h.loginSubmit)

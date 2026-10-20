@@ -301,7 +301,7 @@ func (h *oauthHandlers) openidConfiguration(w http.ResponseWriter, _ *http.Reque
 	doc := h.metadataDoc()
 	doc["subject_types_supported"] = []string{"public"}
 	doc["id_token_signing_alg_values_supported"] = []string{"RS256"}
-	doc["scopes_supported"] = []string{"openid"}
+	doc["scopes_supported"] = []string{"openid", "read"}
 	doc["claims_supported"] = []string{"iss", "sub", "aud", "iat", "exp", "nonce"}
 	writeJSON(w, http.StatusOK, doc)
 }
@@ -317,14 +317,17 @@ func (h *oauthHandlers) metadataDoc() map[string]any {
 		"revocation_endpoint":                            base + "/oauth/revoke",
 		"jwks_uri":                                       base + "/.well-known/jwks.json",
 		"response_types_supported":                       []string{"code"},
-		"grant_types_supported":                          []string{authcode.GrantAuthorizationCode, authcode.GrantRefreshToken, authcode.GrantClientCredentials, authcode.GrantDeviceCode},
+		"grant_types_supported":                          []string{authcode.GrantAuthorizationCode, authcode.GrantRefreshToken, authcode.GrantClientCredentials},
 		"code_challenge_methods_supported":               []string{oauth.MethodS256},
 		"token_endpoint_auth_methods_supported":          []string{authcode.MethodBasic, authcode.MethodPost, "none"},
 		"introspection_endpoint_auth_methods_supported":  []string{authcode.MethodBasic, authcode.MethodPost, "none"},
 		"revocation_endpoint_auth_methods_supported":     []string{authcode.MethodBasic, authcode.MethodPost, "none"},
 		"authorization_response_iss_parameter_supported": true,
-		"device_authorization_endpoint":                  base + "/oauth/device_authorization",
 		"pushed_authorization_request_endpoint":          base + "/oauth/par",
+	}
+	if h.loginEnabled {
+		doc["device_authorization_endpoint"] = base + "/oauth/device_authorization"
+		doc["grant_types_supported"] = append(doc["grant_types_supported"].([]string), authcode.GrantDeviceCode)
 	}
 	if h.registrationEnabled {
 		doc["registration_endpoint"] = base + "/connect/register"

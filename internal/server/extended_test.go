@@ -27,6 +27,10 @@ const (
 // newExtEnv builds a server with a device client, a scoped PAR client, open
 // registration and the conformance login, on a controllable clock.
 func newExtEnv(t *testing.T, registration bool) *handlerEnv {
+	return newExtEnvMode(t, registration, true)
+}
+
+func newExtEnvMode(t *testing.T, registration, conformance bool) *handlerEnv {
 	t.Helper()
 	st, err := sqlite.Open(sqlite.MemoryDSN)
 	if err != nil {
@@ -64,7 +68,7 @@ func newExtEnv(t *testing.T, registration bool) *handlerEnv {
 		t.Fatal(err)
 	}
 	h := server.New(server.Deps{
-		Service: svc, Sessions: sess, Issuer: issuer, Conformance: true,
+		Service: svc, Sessions: sess, Issuer: issuer, Conformance: conformance,
 		RegistrationEnabled: registration, RegistrationScopes: []string{"openid", "read"},
 	})
 	return &handlerEnv{h: h, store: st, clock: clk}
