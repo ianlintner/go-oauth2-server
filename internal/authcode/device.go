@@ -18,8 +18,9 @@ const (
 	GrantDeviceCode = "urn:ietf:params:oauth:grant-type:device_code"
 
 	DefaultDeviceCodeTTL  = 10 * time.Minute
-	DefaultDeviceInterval = 5 // seconds, RFC 8628 §3.2 default
-	slowDownStep          = 5 // seconds added on slow_down, RFC 8628 §3.5
+	DefaultDeviceInterval = 5  // seconds, RFC 8628 §3.2 default
+	slowDownStep          = 5  // seconds added on slow_down, RFC 8628 §3.5
+	maxDeviceInterval     = 60 // seconds; caps slow_down growth to bound pollback
 
 	// userCodeAlphabet omits vowels and look-alike characters (RFC 8628 §6.1):
 	// 20 symbols, 8 characters, ~34.6 bits, shown as XXXX-XXXX.
@@ -48,36 +49,42 @@ type failureLimiter struct {
 	m  map[string][]time.Time
 }
 
-func (l *failureLimiter) recent(key string, now time.Time) []time.Time {
-	cutoff := now.Add(-userCodeFailureWindow)
-	list := l.m[key]
-	kept := list[:0]
-	for _, t := range list {
-		if t.After(cutoff) {
-			kept = append(kept, t)
-		}
-	}
-	if len(kept) == 0 {
-		delete(l.m, key)
-		return nil
-	}
-	l.m[key] = kept
-	return kept
-}
-
-func (l *failureLimiter) blocked(key string, now time.Time) bool {
-	l.mu.Lock()
-	defer l.mu.Unlock()
-	return len(l.recent(key, now)) >= maxUserCodeFailures
-}
-
-func (l *failureLimiter) fail(key string, now time.Time) {
+// reserve atomically reserves a failure slot for key, returning false (with
+// the entry already counted) when the user is over the window limit. This is
+// one check-and-record so concurrent guesses against the same session cannot
+// each observe an under-limit count before any is recorded.
+func (l *failureLimiter) reserve(key string, now time.Time) bool {
 	l.mu.Lock()
 	defer l.mu.Unlock()
 	if l.m == nil {
 		l.m = map[string][]time.Time{}
 	}
-	l.m[key] = append(l.recent(key, now), now)
+	cutoff := now.Add(-userCodeFailureWindow)
+	kept := l.m[key][:0]
+	for _, t := range l.m[key] {
+		if t.After(cutoff) {
+			kept = append(kept, t)
+		}
+	}
+	if len(kept) >= maxUserCodeFailures {
+		l.m[key] = kept
+		return false
+	}
+	l.m[key] = append(kept, now)
+	return true
+}
+
+// release gives back one reserved slot after a successful decision, so only
+// failed entries count against the limit.
+func (l *failureLimiter) release(key string) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	if n := len(l.m[key]); n > 0 {
+		l.m[key] = l.m[key][:n-1]
+		if n == 1 {
+			delete(l.m, key)
+		}
+	}
 }
 
 // AuthorizeDevice handles the device authorization request (RFC 8628 §3.1).
@@ -176,14 +183,17 @@ func normalizeUserCode(in string) (string, bool) {
 }
 
 // DecideDevice records the signed-in user's decision on the authorization
-// identified by userCode. Failed entries count against the user's limit.
+// identified by userCode. Failed entries count against the user's limit; the
+// count is reserved up front (check-and-record) so concurrent guesses cannot
+// overshoot the cap.
 func (s *Service) DecideDevice(ctx context.Context, user oauth.User, userCode string, approve bool) error {
 	now := s.clock.Now()
-	if s.failures.blocked(user.ID, now) {
+	if !s.failures.reserve(user.ID, now) {
+		// Over the per-user failure window: refuse everything, even a correct
+		// code, until the window expires.
 		return oauth.InvalidRequest("too many failed attempts; try again later").WithStatus(429)
 	}
 	bad := func() error {
-		s.failures.fail(user.ID, now)
 		return oauth.InvalidRequest("the code is unknown, expired or already used")
 	}
 	norm, ok := normalizeUserCode(userCode)
@@ -204,6 +214,7 @@ func (s *Service) DecideDevice(ctx context.Context, user oauth.User, userCode st
 	if !now.Before(rec.ExpiresAt) {
 		return bad()
 	}
+	s.failures.release(user.ID) // success: only failures count against the cap
 	return nil
 }
 
@@ -231,10 +242,25 @@ func (s *Service) deviceToken(ctx context.Context, client oauth.Client, p oauth.
 		return TokenResponse{}, oauth.ExpiredToken()
 	}
 
+	// Terminal states answer before any rate limiting: a spent code is simply
+	// invalid, and a denied one is access_denied, however fast it is polled.
+	if rec.Consumed {
+		return TokenResponse{}, oauth.InvalidGrant("device code is invalid or already used")
+	}
+	switch rec.Status {
+	case oauth.DeviceDenied:
+		// RFC 8628 §3.5 / RFC 6749 §5.2: access_denied is a 400 error.
+		return TokenResponse{}, oauth.AccessDenied("the user denied the authorization").WithStatus(400)
+	case oauth.DeviceApproved:
+		// Approved and about to be consumed below.
+	default:
+		// Pending stays pending; fall through to the poll-rate check.
+	}
+
 	// Too-fast polling is rejected before the decision is revealed, and the
 	// client's interval grows so a misbehaving poller cannot ride the limit.
 	if !rec.LastPoll.IsZero() && now.Sub(rec.LastPoll) < time.Duration(rec.Interval)*time.Second {
-		if err := repo.RecordPoll(ctx, hash, now, rec.Interval+slowDownStep); err != nil {
+		if err := repo.RecordPoll(ctx, hash, now, minInt(rec.Interval+slowDownStep, maxDeviceInterval)); err != nil {
 			return TokenResponse{}, oauth.ServerError(err)
 		}
 		return TokenResponse{}, oauth.SlowDown()
@@ -243,12 +269,8 @@ func (s *Service) deviceToken(ctx context.Context, client oauth.Client, p oauth.
 		return TokenResponse{}, oauth.ServerError(err)
 	}
 
-	switch rec.Status {
-	case oauth.DevicePending:
+	if rec.Status == oauth.DevicePending {
 		return TokenResponse{}, oauth.AuthorizationPending()
-	case oauth.DeviceDenied:
-		// RFC 8628 §3.5 / RFC 6749 §5.2: access_denied is a 400 error.
-		return TokenResponse{}, oauth.AccessDenied("the user denied the authorization").WithStatus(400)
 	}
 
 	if _, err := repo.Consume(ctx, hash, now); err != nil {

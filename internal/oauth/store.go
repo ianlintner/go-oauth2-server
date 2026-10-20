@@ -102,6 +102,8 @@ type DeviceCode struct {
 	Interval int
 	// LastPoll is the time of the previous token request (zero if none).
 	LastPoll time.Time
+	// Consumed is true once the approved authorization has been redeemed.
+	Consumed bool
 }
 
 // PushedRequest is an RFC 9126 pushed authorization request. Only the
@@ -191,7 +193,8 @@ type DeviceCodeRepository interface {
 	// Expiry is the caller's decision.
 	Decide(ctx context.Context, userCodeHash, status, userID string) (DeviceCode, error)
 	// RecordPoll stores the time of a token request and the (possibly
-	// increased) interval.
+	// increased) interval. The stored interval is never lowered, so a racing
+	// poller cannot undo a slow_down increase.
 	RecordPoll(ctx context.Context, deviceCodeHash string, at time.Time, interval int) error
 	// Consume atomically spends an approved authorization. A second call, or
 	// a call on a pending/denied one, returns ErrAlreadyConsumed; an unknown

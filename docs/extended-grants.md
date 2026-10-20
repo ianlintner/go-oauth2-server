@@ -30,12 +30,16 @@ it is RFC-safe. They are proposed here for owner review, not silently shipped.
    recommends 20-bit minimum and discourages trivial codes.
 
 2. **Polling interval / slow_down.** Default interval 5s (RFC 8628 §3.2), +5s
-   per too-fast poll (RFC 8628 §3.5). The grown interval persists on the
-   record so a misbehaving poller cannot ride the lower limit.
+   per too-fast poll (RFC 8628 §3.5), capped at 60s. The grown interval
+   persists on the record and is never lowered by a racing poller, so a
+   misbehaving client cannot ride a lower limit. A spent or denied code never
+   answers `slow_down`.
 
 3. **User-code entry brute-force limit.** A signed-in user may fail at most
-   5 entries per 5 minutes (returning 429), inside `authcode` only. RFC 8628
-   §5.2 requires the endpoint be designed to limit brute-force attempts.
+   5 entries per 5 minutes (returning 429), inside `authcode` only. The count
+   is a single atomic check-and-record, so concurrent guesses cannot overshoot
+   the cap, and a successful entry does not count against it. RFC 8628 §5.2
+   requires the endpoint be designed to limit brute-force attempts.
 
 4. **Pushed request lifetime.** `request_uri` is single-use (RFC 9126 §2.2)
    and expires after **60 seconds** — a policy choice; the RFC leaves TTL to
@@ -68,6 +72,20 @@ it is RFC-safe. They are proposed here for owner review, not silently shipped.
   the Rust reference, which returns 403).
 - JAR, RAR, token exchange, client assertions (RFC 9101/9396/8693/7523) are
   not implemented; their scenarios are draft and remain so.
+
+## Known gaps for a production turn-on (not part of this card)
+
+- **No expiry cleanup** for `device_codes`, `pushed_requests` or dynamically
+  registered `clients` rows: a loop of public-client requests fills the store.
+- **No per-IP / per-client rate limit** on unauthenticated `/oauth/device_authorization`
+  and `/oauth/par` (registration is refused in production, so it is moot there).
+- The user-code failure limiter is **in-process memory**, so it does not span
+  replicas; it bounds brute force only per process.
+- The user code is stored as an (unsalted) SHA-256 of ~34.6 bits, brute-forceable
+  if the database leaks, within its 10-minute TTL.
+- A token-assembly failure after `Consume` would burn a device code without
+  issuing a token (matching the existing authorization-code path; a `WithTx`
+  wrap would make it atomic).
 
 ## Verification
 

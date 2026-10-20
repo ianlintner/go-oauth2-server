@@ -671,6 +671,14 @@ func (s *Service) checkSecret(c oauth.Client, presented string) error {
 
 // ---- helpers ----
 
+// minInt returns the smaller of a and b.
+func minInt(a, b int) int {
+	if a < b {
+		return a
+	}
+	return b
+}
+
 // grantAllowed reports whether the client may use grant. A client that
 // registered no grant types gets the RFC 7591 default: authorization_code.
 func grantAllowed(c oauth.Client, grant string) bool {

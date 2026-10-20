@@ -394,6 +394,21 @@ func TestPARHTTPRequestURIIsHighEntropy(t *testing.T) {
 
 // ---- registration ----
 
+// The OIDC nonce must survive the login round trip, or an id_token issued
+// after login would silently lose it.
+func TestAuthorizeCarriesNonceAcrossLogin(t *testing.T) {
+	e := newExtEnv(t, false)
+	q := authQuery("client-a", callback, map[string]string{"nonce": "n-0S6_WzA2Mj", "scope": "read"})
+	rec := e.get("/oauth/authorize?" + q)
+	if rec.Code != 302 {
+		t.Fatalf("anonymous authorize = %d", rec.Code)
+	}
+	rq := location(t, rec).Query().Get("return_query")
+	if !strings.Contains(rq, "nonce=n-0S6_WzA2Mj") {
+		t.Fatalf("return_query %q lost the nonce", rq)
+	}
+}
+
 func TestRegistrationNotMountedWhenDisabled(t *testing.T) {
 	e := newExtEnv(t, false)
 	rec := e.postJSON("/connect/register", `{"redirect_uris":["https://client.example/dyn"]}`)

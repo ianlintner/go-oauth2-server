@@ -14,7 +14,7 @@ import (
 
 type deviceRepo struct{ db execer }
 
-const deviceCols = `device_code_hash, user_code_hash, client_id, scope, status, user_id, expires_at, poll_interval, last_poll_at`
+const deviceCols = `device_code_hash, user_code_hash, client_id, scope, status, user_id, expires_at, poll_interval, last_poll_at, consumed_at IS NOT NULL`
 
 func scanDevice(row *sql.Row) (oauth.DeviceCode, error) {
 	var (
@@ -22,7 +22,7 @@ func scanDevice(row *sql.Row) (oauth.DeviceCode, error) {
 		expires int64
 		poll    sql.NullInt64
 	)
-	if err := row.Scan(&d.DeviceCodeHash, &d.UserCodeHash, &d.ClientID, &d.Scope, &d.Status, &d.UserID, &expires, &d.Interval, &poll); err != nil {
+	if err := row.Scan(&d.DeviceCodeHash, &d.UserCodeHash, &d.ClientID, &d.Scope, &d.Status, &d.UserID, &expires, &d.Interval, &poll, &d.Consumed); err != nil {
 		return oauth.DeviceCode{}, err
 	}
 	d.ExpiresAt = fromNanos(expires)
@@ -65,9 +65,14 @@ func (r *deviceRepo) Decide(ctx context.Context, userCodeHash, status, userID st
 	return d, err
 }
 
+// RecordPoll stores the time of a token request and the (possibly increased)
+// interval. The interval is never lowered: a concurrent poller that also
+// recorded a larger interval keeps it (RFC 8628 §3.5 slow_down growth).
 func (r *deviceRepo) RecordPoll(ctx context.Context, hash string, at time.Time, interval int) error {
 	_, err := r.db.ExecContext(ctx,
-		`UPDATE device_codes SET last_poll_at = ?, poll_interval = ? WHERE device_code_hash = ?`,
+		`UPDATE device_codes
+		 SET last_poll_at = ?, poll_interval = MAX(poll_interval, ?)
+		 WHERE device_code_hash = ?`,
 		nanos(at), interval, hash)
 	return err
 }
