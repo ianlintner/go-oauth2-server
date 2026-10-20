@@ -81,7 +81,7 @@ func (h *oauthHandlers) renderDevice(w http.ResponseWriter, status int, msg stri
 func (h *oauthHandlers) deviceVerify(w http.ResponseWriter, r *http.Request) {
 	switch r.Method {
 	case http.MethodGet:
-		user, ok, err := h.currentUser(r)
+		_, ok, err := h.currentUser(r)
 		if err != nil {
 			h.fail(w, r, err)
 			return
@@ -91,7 +91,6 @@ func (h *oauthHandlers) deviceVerify(w http.ResponseWriter, r *http.Request) {
 			w.WriteHeader(http.StatusFound)
 			return
 		}
-		_ = user
 		h.renderDevice(w, http.StatusOK, "")
 	case http.MethodPost:
 		h.deviceDecide(w, r)

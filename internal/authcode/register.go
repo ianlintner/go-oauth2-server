@@ -3,7 +3,6 @@ package authcode
 import (
 	"context"
 	"encoding/hex"
-	"errors"
 	"net/url"
 	"strings"
 
@@ -56,9 +55,8 @@ var registrableGrants = map[string]bool{
 }
 
 // Register validates and stores a new client. allowedScopes is the policy
-// ceiling: a client may only be registered for scopes within it, and gets all
-// of them when it requests none is NOT the default: no scope is granted
-// unless requested.
+// ceiling: a client may only be registered for scopes within it. No scope is
+// granted unless the registration requests it.
 func (s *Service) Register(ctx context.Context, req RegistrationRequest, allowedScopes []string) (RegistrationResponse, error) {
 	if len(req.RedirectURIs) == 0 {
 		return RegistrationResponse{}, oauth.InvalidRedirectURI("redirect_uris is required")
@@ -150,10 +148,9 @@ func (s *Service) Register(ctx context.Context, req RegistrationRequest, allowed
 		// 0 = the secret does not expire (RFC 7591 §3.2.1).
 		resp.ClientSecretExpiresAt = 0
 	}
+	// A 128-bit random id cannot collide in practice, so any error here
+	// (including ErrConflict) is a server fault.
 	if err := s.store.Clients().Create(ctx, rec); err != nil {
-		if errors.Is(err, oauth.ErrConflict) {
-			return RegistrationResponse{}, oauth.ServerError(err)
-		}
 		return RegistrationResponse{}, oauth.ServerError(err)
 	}
 	return resp, nil
