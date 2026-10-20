@@ -91,6 +91,9 @@ type Service struct {
 	tokens     *token.Service
 	refreshTTL time.Duration
 
+	// failures rate-limits failed device user-code entry per signed-in user.
+	failures failureLimiter
+
 	// dummyHash is verified against when a client or user does not exist so
 	// that a missing identity costs the same as a wrong secret.
 	dummyHash string
@@ -196,6 +199,8 @@ func (s *Service) ValidateRequest(c oauth.Client, redirectURI string, p oauth.Pa
 	}
 	// Signed or by-reference request objects are not implemented. Ignoring
 	// them would let a client believe its protected parameters were honored.
+	// (A pushed request_uri is resolved by the handler before this runs and
+	// never reaches it: see RedeemPushed.)
 	if p.Has("request") || p.Has("request_uri") {
 		return AuthRequest{}, oauth.InvalidRequest("request objects are not supported")
 	}
@@ -270,7 +275,7 @@ func (s *Service) Token(ctx context.Context, authorization string, p oauth.Param
 	}
 	// Decide support before authenticating so an unsupported grant (including
 	// the prohibited password grant) is refused without touching credentials.
-	if grant != GrantAuthorizationCode && grant != GrantClientCredentials && grant != GrantRefreshToken {
+	if grant != GrantAuthorizationCode && grant != GrantClientCredentials && grant != GrantRefreshToken && grant != GrantDeviceCode {
 		return TokenResponse{}, oauth.UnsupportedGrantType("grant_type is not supported")
 	}
 
@@ -287,6 +292,8 @@ func (s *Service) Token(ctx context.Context, authorization string, p oauth.Param
 		return s.redeemCode(ctx, client, p)
 	case GrantRefreshToken:
 		return s.refreshToken(ctx, client, p)
+	case GrantDeviceCode:
+		return s.deviceToken(ctx, client, p)
 	default:
 		return s.clientCredentials(ctx, client, p)
 	}

@@ -128,6 +128,8 @@ type repos struct {
 	codes   *authCodeRepo
 	refresh *refreshRepo
 	access  *accessTokenRepo
+	device  *deviceRepo
+	pushed  *pushedRepo
 }
 
 func newRepos(db execer) repos {
@@ -137,8 +139,16 @@ func newRepos(db execer) repos {
 		codes:   &authCodeRepo{db},
 		refresh: &refreshRepo{db},
 		access:  &accessTokenRepo{db},
+		device:  &deviceRepo{db},
+		pushed:  &pushedRepo{db},
 	}
 }
+
+// DeviceCodes returns the RFC 8628 device-authorization repository.
+func (r repos) DeviceCodes() oauth.DeviceCodeRepository { return r.device }
+
+// PushedRequests returns the RFC 9126 pushed-request repository.
+func (r repos) PushedRequests() oauth.PushedRequestRepository { return r.pushed }
 
 // Clients returns the client repository.
 func (r repos) Clients() oauth.ClientRepository { return r.clients }

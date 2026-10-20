@@ -2,14 +2,20 @@
 # `oauth2-conformance` runner contract
 # (https://github.com/ianlintner/oauth2-conformance).
 #
-# Pinned contract commit: 1ad9330a2954314cda9e2b462e36adaadfcd5061
+# Pinned contract commit: 604c62d6c98d8685ef2a1296d12014615dc38390
 # (also pinned in conformance-contract.yaml; the manifest schema's `contract`
-# field is a full 40-char SHA before the 0.2.0 tag exists, per ROADMAP.md flow
-# step 2).
+# field is a full 40-char SHA before a tag is cut, per ROADMAP.md flow step 2).
 #
 # Every profile listed under `profiles` is exercised by
 # `scripts/conformance-run.sh`. A stable scenario that fails in a claimed
 # profile fails that run.
+#
+# Extended grants (v0.4): only the RFC 8628 device-grant scenarios are
+# `stable` in the contract today; PAR (RFC 9126) and registration (RFC 7591/2)
+# scenarios are still `draft` because the contract runner cannot yet sign
+# client assertions/JWKs or send duplicate form keys. This implementation
+# ships all three, but `extended-grants` here claims device grant only —
+# do not read it as PAR/registration conformance. See docs/extended-grants.md.
 #
 # NOTE (token-lifecycle): all stable token-lifecycle scenarios now pass. The
 # two reference-deviation scenarios (revocation.cross-client and
@@ -17,5 +23,5 @@
 # runner defers rather than fails; this implementation intentionally matches the
 # reference SUT's behaviour for both.
 implementation: go-oauth2-server
-contract: 1ad9330a2954314cda9e2b462e36adaadfcd5061
-profiles: [core, token-lifecycle, oidc-basic]
+contract: 604c62d6c98d8685ef2a1296d12014615dc38390
+profiles: [core, token-lifecycle, oidc-basic, extended-grants]

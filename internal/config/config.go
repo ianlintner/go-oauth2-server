@@ -61,6 +61,11 @@ type Config struct {
 	// off unless explicitly set, and refused in production.
 	ConformanceMode bool
 	ConformanceSeed string
+
+	// DynamicRegistration mounts open RFC 7591 registration. It is off by
+	// default, implied by conformance mode, and refused in production until
+	// an initial-access-token policy is approved.
+	DynamicRegistration bool
 }
 
 // Load reads configuration through getenv (os.Getenv when nil) and validates
@@ -138,6 +143,15 @@ func Load(getenv func(string) string) (Config, error) {
 	}
 
 	// Storage.
+	if cfg.DynamicRegistration, err = boolEnv(get("OAUTH2_DYNAMIC_REGISTRATION"), false); err != nil {
+		fail("OAUTH2_DYNAMIC_REGISTRATION %v", err)
+	}
+	if cfg.ConformanceMode {
+		cfg.DynamicRegistration = true
+	}
+	if production && cfg.DynamicRegistration {
+		fail("OAUTH2_DYNAMIC_REGISTRATION=true is not allowed in production (open registration has no approved access policy)")
+	}
 	if cfg.StorageDSN == "" {
 		cfg.StorageDSN = MemoryDSN
 	}

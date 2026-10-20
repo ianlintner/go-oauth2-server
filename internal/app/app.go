@@ -156,6 +156,9 @@ func Run(ctx context.Context, opts Options) error {
 			Issuer:      cfg.Issuer,
 			Tokens:      tokens,
 			Logger:      log,
+
+			RegistrationEnabled: cfg.DynamicRegistration,
+			RegistrationScopes:  []string{"openid", "read"},
 		}),
 		ReadHeaderTimeout: 5 * time.Second,
 	}
