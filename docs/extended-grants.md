@@ -1,6 +1,17 @@
 # Extended grants — device grant, PAR, dynamic registration (v0.4)
 
-Owner review is required before this becomes production behavior. This is a
+Owner review is required before this becomes production behavior.
+
+**The device grant is conformance-only.** It needs a resource-owner login for
+the verification page, and this server has none outside conformance mode. So
+`/oauth/device_authorization` and `/oauth/device/verify` are mounted only when
+`OAUTH2_CONFORMANCE_MODE=1` (itself refused in production); elsewhere they
+return 404, and discovery omits `device_authorization_endpoint` and the device
+grant from `grant_types_supported`. Because no device code can be issued
+outside conformance mode, a `device_code` token request cannot succeed there
+(fail-closed), even though the grant URN is recognized.
+
+This is a
 scoped port of the RFC 8628 device grant, RFC 9126 pushed authorization
 requests and RFC 7591 dynamic client registration, validated against the
 shared `oauth2-conformance` contract's `extended-grants` profile.
@@ -58,6 +69,9 @@ it is RFC-safe. They are proposed here for owner review, not silently shipped.
      (absolute, no fragment/userinfo, https-or-loopback-or-private-scheme);
    - is granted only scopes the operator allows (currently `openid`, `read`),
      and only those it requests.
+   - RFC 7591 §2: unrecognized metadata members are **ignored**; understood but
+     unsupported ones (`jwks`, `jwks_uri`, `software_statement`) fail with
+     `invalid_client_metadata`.
    RFC 7592 client management (read/update/delete) is **out of scope** — its
    scenarios are draft.
 
@@ -77,8 +91,9 @@ it is RFC-safe. They are proposed here for owner review, not silently shipped.
 
 - **No expiry cleanup** for `device_codes`, `pushed_requests` or dynamically
   registered `clients` rows: a loop of public-client requests fills the store.
-- **No per-IP / per-client rate limit** on unauthenticated `/oauth/device_authorization`
-  and `/oauth/par` (registration is refused in production, so it is moot there).
+- **No per-IP / per-client rate limit** on unauthenticated `/oauth/par` (reachable
+  in production) or on `/oauth/device_authorization` and registration (neither is
+  reachable in production: the first is conformance-only, the second is refused).
 - The user-code failure limiter is **in-process memory**, so it does not span
   replicas; it bounds brute force only per process.
 - The user code is stored as an (unsalted) SHA-256 of ~34.6 bits, brute-forceable

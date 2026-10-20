@@ -172,12 +172,12 @@ func (h *oauthHandlers) par(w http.ResponseWriter, r *http.Request) {
 
 // ---- POST /connect/register (RFC 7591 §3) ----
 
-// registrationFields are the only members accepted; anything else is refused
-// so a client never believes unsupported metadata (jwks, software_statement,
-// grant types we refuse) was honored.
-var registrationFields = map[string]bool{
-	"redirect_uris": true, "client_name": true, "token_endpoint_auth_method": true,
-	"grant_types": true, "response_types": true, "scope": true,
+// unsupportedRegistrationFields are members this server understands but does
+// not support. They fail with invalid_client_metadata instead of being dropped,
+// so a client never believes key material or a signed statement was honored.
+// Members the server does not recognize at all are ignored (RFC 7591 §2).
+var unsupportedRegistrationFields = map[string]bool{
+	"jwks": true, "jwks_uri": true, "software_statement": true,
 }
 
 func (h *oauthHandlers) register(w http.ResponseWriter, r *http.Request) {
@@ -200,7 +200,7 @@ func (h *oauthHandlers) register(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	for k := range raw {
-		if !registrationFields[k] {
+		if unsupportedRegistrationFields[k] {
 			h.fail(w, r, oauth.InvalidClientMetadata("unsupported client metadata member"))
 			return
 		}

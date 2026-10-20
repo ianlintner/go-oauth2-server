@@ -453,7 +453,8 @@ func TestRegistrationHTTPRejects(t *testing.T) {
 		{"invalid redirect uri", `{"redirect_uris":["not a uri"],"client_name":"bad"}`, "application/json", "invalid_redirect_uri"},
 		{"missing redirect uris", `{"client_name":"bad"}`, "application/json", "invalid_redirect_uri"},
 		{"redirect_uris wrong type", `{"redirect_uris":"https://x.example/cb"}`, "application/json", "invalid_redirect_uri"},
-		{"unknown member", `{"redirect_uris":["https://x.example/cb"],"jwks_uri":"https://x.example/jwks"}`, "application/json", "invalid_client_metadata"},
+		{"jwks_uri understood but unsupported", `{"redirect_uris":["https://x.example/cb"],"jwks_uri":"https://x.example/jwks"}`, "application/json", "invalid_client_metadata"},
+		{"jwks understood but unsupported", `{"redirect_uris":["https://x.example/cb"],"jwks":{"keys":[]}}`, "application/json", "invalid_client_metadata"},
 		{"software statement", `{"redirect_uris":["https://x.example/cb"],"software_statement":"a.b.c"}`, "application/json", "invalid_client_metadata"},
 		{"client_credentials", `{"redirect_uris":["https://x.example/cb"],"grant_types":["client_credentials"]}`, "application/json", "invalid_client_metadata"},
 		{"not json", `not json`, "application/json", "invalid_client_metadata"},
@@ -468,6 +469,22 @@ func TestRegistrationHTTPRejects(t *testing.T) {
 			e.h.ServeHTTP(rec, r)
 			wantErrBody(t, rec, 400, c.code)
 		})
+	}
+}
+
+// RFC 7591 §2: the server must ignore metadata it does not understand.
+func TestRegistrationHTTPIgnoresUnknownMetadata(t *testing.T) {
+	e := newExtEnv(t, true)
+	body := `{"redirect_uris":["https://x.example/cb"],"client_name":"ok","x_vendor_ext":{"a":1},"totally_unknown":"v"}`
+	r := httptest.NewRequest(http.MethodPost, "/connect/register", strings.NewReader(body))
+	r.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	e.h.ServeHTTP(rec, r)
+	if rec.Code != 201 {
+		t.Fatalf("unknown metadata = %d %s, want 201", rec.Code, rec.Body.String())
+	}
+	if strings.Contains(rec.Body.String(), "x_vendor_ext") || strings.Contains(rec.Body.String(), "totally_unknown") {
+		t.Fatalf("response echoes ignored metadata: %s", rec.Body.String())
 	}
 }
 

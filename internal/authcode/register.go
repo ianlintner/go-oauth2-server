@@ -17,7 +17,9 @@ import (
 // authorization endpoint. RFC 7592 management is not implemented.
 
 // RegistrationRequest is the subset of RFC 7591 §2 metadata this server
-// honors. Unknown members are rejected by the HTTP layer, never ignored.
+// honors. Unrecognized members are ignored (RFC 7591 §2); understood but
+// unsupported ones (jwks, jwks_uri, software_statement) are rejected by the
+// HTTP layer.
 type RegistrationRequest struct {
 	RedirectURIs            []string `json:"redirect_uris"`
 	ClientName              string   `json:"client_name"`
