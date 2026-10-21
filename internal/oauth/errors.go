@@ -26,6 +26,18 @@ const (
 	CodeInsufficientScope       Code = "insufficient_scope"
 	CodeServerError             Code = "server_error"
 	CodeTemporarilyUnavailable  Code = "temporarily_unavailable"
+
+	// RFC 8628 §3.5 device grant token-endpoint errors.
+	CodeAuthorizationPending Code = "authorization_pending"
+	CodeSlowDown             Code = "slow_down"
+	CodeExpiredToken         Code = "expired_token"
+
+	// RFC 9126 §4 / OIDC Core §3.1.2.6 request_uri error.
+	CodeInvalidRequestURI Code = "invalid_request_uri"
+
+	// RFC 7591 §3.2.2 registration errors.
+	CodeInvalidRedirectURI    Code = "invalid_redirect_uri"
+	CodeInvalidClientMetadata Code = "invalid_client_metadata"
 )
 
 // Error is the single typed OAuth error. It is mapped exactly once, in the
@@ -123,6 +135,32 @@ func UnsupportedResponseType(description string) *Error {
 
 // InvalidScope builds an invalid_scope error.
 func InvalidScope(description string) *Error { return newError(CodeInvalidScope, description) }
+
+// AuthorizationPending builds the RFC 8628 §3.5 authorization_pending error.
+func AuthorizationPending() *Error {
+	return newError(CodeAuthorizationPending, "the user has not yet completed the authorization")
+}
+
+// SlowDown builds the RFC 8628 §3.5 slow_down error.
+func SlowDown() *Error { return newError(CodeSlowDown, "polling too fast; increase the interval") }
+
+// ExpiredToken builds the RFC 8628 §3.5 expired_token error.
+func ExpiredToken() *Error { return newError(CodeExpiredToken, "the device code has expired") }
+
+// InvalidRequestURI builds an invalid_request_uri error (RFC 9126 §4).
+func InvalidRequestURI(description string) *Error {
+	return newError(CodeInvalidRequestURI, description)
+}
+
+// InvalidRedirectURI builds an RFC 7591 invalid_redirect_uri error.
+func InvalidRedirectURI(description string) *Error {
+	return newError(CodeInvalidRedirectURI, description)
+}
+
+// InvalidClientMetadata builds an RFC 7591 invalid_client_metadata error.
+func InvalidClientMetadata(description string) *Error {
+	return newError(CodeInvalidClientMetadata, description)
+}
 
 // AccessDenied builds an access_denied error.
 func AccessDenied(description string) *Error { return newError(CodeAccessDenied, description) }

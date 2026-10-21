@@ -80,6 +80,46 @@ type AccessToken struct {
 	RevokedAt time.Time // zero when active
 }
 
+// Device authorization states (RFC 8628).
+const (
+	DevicePending  = "pending"
+	DeviceApproved = "approved"
+	DeviceDenied   = "denied"
+)
+
+// DeviceCode is one RFC 8628 device authorization. Only SHA-256 hashes of the
+// device_code and of the normalized user_code are stored.
+type DeviceCode struct {
+	DeviceCodeHash string
+	UserCodeHash   string
+	ClientID       string
+	Scope          string
+	Status         string // DevicePending | DeviceApproved | DeviceDenied
+	UserID         string // set when approved
+	ExpiresAt      time.Time
+	// Interval is the minimum polling interval in seconds; it grows by 5 each
+	// time the client polls too fast (RFC 8628 §3.5).
+	Interval int
+	// LastPoll is the time of the previous token request (zero if none).
+	LastPoll time.Time
+	// Consumed is true once the approved authorization has been redeemed.
+	Consumed bool
+}
+
+// PushedRequest is an RFC 9126 pushed authorization request. Only the
+// validated authorization-request fields are kept; the request_uri value
+// itself is stored as a hash.
+type PushedRequest struct {
+	URIHash       string
+	ClientID      string
+	RedirectURI   string
+	Scope         string
+	State         string
+	CodeChallenge string
+	Nonce         string
+	ExpiresAt     time.Time
+}
+
 // ClientRepository stores registered clients.
 type ClientRepository interface {
 	// Create returns ErrConflict if the client ID exists.
@@ -139,6 +179,42 @@ type AccessTokenRepository interface {
 	Revoke(ctx context.Context, jti string, now time.Time) (bool, error)
 }
 
+// DeviceCodeRepository stores RFC 8628 device authorizations.
+type DeviceCodeRepository interface {
+	// Create returns ErrConflict if either hash exists.
+	Create(ctx context.Context, d DeviceCode) error
+	// GetByHash returns ErrNotFound if absent. The record is returned even if
+	// it is expired, decided or consumed; the caller decides what that means.
+	GetByHash(ctx context.Context, deviceCodeHash string) (DeviceCode, error)
+	// Decide atomically moves the authorization with this user-code hash from
+	// pending to approved or denied (status) and records userID. Exactly one of
+	// any number of concurrent callers succeeds; a decided or consumed
+	// authorization returns ErrAlreadyConsumed, an unknown hash ErrNotFound.
+	// Expiry is the caller's decision.
+	Decide(ctx context.Context, userCodeHash, status, userID string) (DeviceCode, error)
+	// RecordPoll stores the time of a token request and the (possibly
+	// increased) interval. The stored interval is never lowered, so a racing
+	// poller cannot undo a slow_down increase.
+	RecordPoll(ctx context.Context, deviceCodeHash string, at time.Time, interval int) error
+	// Consume atomically spends an approved authorization. A second call, or
+	// a call on a pending/denied one, returns ErrAlreadyConsumed; an unknown
+	// hash returns ErrNotFound.
+	Consume(ctx context.Context, deviceCodeHash string, now time.Time) (DeviceCode, error)
+}
+
+// PushedRequestRepository stores RFC 9126 pushed authorization requests.
+type PushedRequestRepository interface {
+	// Create returns ErrConflict if the hash exists.
+	Create(ctx context.Context, r PushedRequest) error
+	// GetByHash returns the request without consuming it (ErrNotFound if
+	// absent or already consumed).
+	GetByHash(ctx context.Context, uriHash string) (PushedRequest, error)
+	// Consume atomically spends the request. Exactly one of any number of
+	// concurrent callers succeeds; later calls return ErrAlreadyConsumed, an
+	// unknown hash ErrNotFound. Expiry is the caller's decision.
+	Consume(ctx context.Context, uriHash string, now time.Time) (PushedRequest, error)
+}
+
 // Repositories groups the repositories. A Store exposes them in autocommit
 // mode; WithTx hands the same set bound to one transaction.
 type Repositories interface {
@@ -147,6 +223,8 @@ type Repositories interface {
 	AuthCodes() AuthCodeRepository
 	RefreshTokens() RefreshTokenRepository
 	AccessTokens() AccessTokenRepository
+	DeviceCodes() DeviceCodeRepository
+	PushedRequests() PushedRequestRepository
 }
 
 // Store is the storage port every adapter (SQLite now, PostgreSQL later)

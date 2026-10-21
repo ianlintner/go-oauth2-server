@@ -119,3 +119,10 @@ pnpm --dir "$contract_dir/runner" exec tsx src/cli.ts run \
   --scenarios "$work/scenarios" \
   --profile oidc-basic \
   --implementation "${sut}-oauth2-server"
+
+echo "== contract runner: extended-grants profile against the ${sut} server (port ${port}) =="
+pnpm --dir "$contract_dir/runner" exec tsx src/cli.ts run \
+  --base-url "http://127.0.0.1:${port}" \
+  --scenarios "$work/scenarios" \
+  --profile extended-grants \
+  --implementation "${sut}-oauth2-server"

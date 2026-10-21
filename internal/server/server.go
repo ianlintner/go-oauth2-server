@@ -40,6 +40,13 @@ type Deps struct {
 
 	// Logger receives internal error causes, which are never sent to clients.
 	Logger *slog.Logger
+
+	// RegistrationEnabled mounts RFC 7591 dynamic client registration at
+	// POST /connect/register. It is open registration (no initial access
+	// token) and is therefore refused in production by internal/config.
+	// RegistrationScopes is the ceiling of scopes a registrant may request.
+	RegistrationEnabled bool
+	RegistrationScopes  []string
 }
 
 // NewRouter returns a router with no dependencies, serving liveness only
@@ -70,7 +77,16 @@ func New(d Deps) http.Handler {
 		mux.HandleFunc("POST /oauth/introspect", h.introspect)
 		mux.HandleFunc("POST /oauth/revoke", h.revoke)
 		mux.HandleFunc("/oauth/userinfo", h.userinfo)
+		mux.HandleFunc("/oauth/par", h.par)
+		if d.RegistrationEnabled {
+			mux.HandleFunc("/connect/register", h.register)
+		}
 		if d.Conformance {
+			// The device grant needs the verification page, which needs a
+			// resource-owner login; both exist only here, so the grant is
+			// fail-closed (404, not advertised) elsewhere.
+			mux.HandleFunc("/oauth/device_authorization", h.deviceAuthorization)
+			mux.HandleFunc("/oauth/device/verify", h.deviceVerify)
 			mux.HandleFunc("GET /auth/login", h.loginForm)
 			mux.HandleFunc("POST /auth/login", h.loginSubmit)
 		}

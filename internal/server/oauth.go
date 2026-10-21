@@ -21,12 +21,14 @@ import (
 const maxBodyBytes = 64 << 10
 
 type oauthHandlers struct {
-	svc          *authcode.Service
-	sessions     *session.Manager
-	tokens       *token.Service
-	issuer       string
-	loginEnabled bool
-	log          *slog.Logger
+	svc                 *authcode.Service
+	sessions            *session.Manager
+	tokens              *token.Service
+	issuer              string
+	loginEnabled        bool
+	registrationScopes  []string
+	registrationEnabled bool
+	log                 *slog.Logger
 }
 
 func newOAuthHandlers(d Deps) *oauthHandlers {
@@ -34,7 +36,7 @@ func newOAuthHandlers(d Deps) *oauthHandlers {
 	if lg == nil {
 		lg = slog.Default()
 	}
-	return &oauthHandlers{svc: d.Service, sessions: d.Sessions, tokens: d.Tokens, issuer: d.Issuer, loginEnabled: d.Conformance, log: lg}
+	return &oauthHandlers{svc: d.Service, sessions: d.Sessions, tokens: d.Tokens, issuer: d.Issuer, loginEnabled: d.Conformance, registrationScopes: d.RegistrationScopes, registrationEnabled: d.RegistrationEnabled, log: lg}
 }
 
 // fail logs the internal cause of a server_error and writes the typed error.
@@ -79,6 +81,10 @@ func (h *oauthHandlers) authorize(w http.ResponseWriter, r *http.Request) {
 		h.fail(w, r, err)
 		return
 	}
+	if p.Has("request_uri") {
+		h.authorizePushed(w, r, p)
+		return
+	}
 	client, redirectURI, err := h.svc.ResolveClient(r.Context(), p)
 	if err != nil {
 		h.fail(w, r, err)
@@ -112,6 +118,48 @@ func (h *oauthHandlers) authorize(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	h.redirect(w, redirectURI, url.Values{"code": {code}, "state": nonEmpty(req.State), "iss": {h.issuer}})
+}
+
+// authorizePushed handles /oauth/authorize?client_id=..&request_uri=.. (RFC
+// 9126 §4). Every failure is shown to the resource owner, never redirected:
+// the pushed redirect URI is untrusted until the request is proven to belong
+// to the presenting client. The request is spent only once a resource owner
+// is signed in, so the login detour does not burn it.
+func (h *oauthHandlers) authorizePushed(w http.ResponseWriter, r *http.Request, p oauth.Params) {
+	if p.Has("request") {
+		h.fail(w, r, oauth.InvalidRequest("request objects are not supported"))
+		return
+	}
+	clientID, requestURI := p.Get("client_id"), p.Get("request_uri")
+	if err := h.svc.CheckPushed(r.Context(), clientID, requestURI); err != nil {
+		h.fail(w, r, err)
+		return
+	}
+	user, loggedIn, err := h.currentUser(r)
+	if err != nil {
+		h.fail(w, r, err)
+		return
+	}
+	if !loggedIn {
+		if !h.loginEnabled {
+			h.fail(w, r, oauth.AccessDenied("no resource owner login is available"))
+			return
+		}
+		w.Header().Set("Location", "/auth/login?return_query="+url.QueryEscape(url.Values{"client_id": {clientID}, "request_uri": {requestURI}}.Encode()))
+		w.WriteHeader(http.StatusFound)
+		return
+	}
+	req, err := h.svc.RedeemPushed(r.Context(), clientID, requestURI)
+	if err != nil {
+		h.fail(w, r, err)
+		return
+	}
+	code, err := h.svc.IssueCode(r.Context(), req, user.ID)
+	if err != nil {
+		h.redirectError(w, r, req.RedirectURI, req.State, err)
+		return
+	}
+	h.redirect(w, req.RedirectURI, url.Values{"code": {code}, "state": nonEmpty(req.State), "iss": {h.issuer}})
 }
 
 // currentUser resolves the session cookie to a user. A missing, forged,
@@ -184,7 +232,7 @@ func canonicalQuery(p oauth.Params) string {
 // authorizeParamNames is the set of authorization request parameters this
 // server understands; anything else is not carried across the login.
 var authorizeParamNames = []string{
-	"response_type", "client_id", "redirect_uri", "scope", "state",
+	"response_type", "client_id", "redirect_uri", "scope", "state", "nonce",
 	"code_challenge", "code_challenge_method", "request", "request_uri",
 }
 
@@ -253,14 +301,14 @@ func (h *oauthHandlers) openidConfiguration(w http.ResponseWriter, _ *http.Reque
 	doc := h.metadataDoc()
 	doc["subject_types_supported"] = []string{"public"}
 	doc["id_token_signing_alg_values_supported"] = []string{"RS256"}
-	doc["scopes_supported"] = []string{"openid"}
+	doc["scopes_supported"] = []string{"openid", "read"}
 	doc["claims_supported"] = []string{"iss", "sub", "aud", "iat", "exp", "nonce"}
 	writeJSON(w, http.StatusOK, doc)
 }
 
 func (h *oauthHandlers) metadataDoc() map[string]any {
 	base := strings.TrimRight(h.issuer, "/")
-	return map[string]any{
+	doc := map[string]any{
 		"issuer":                                         h.issuer,
 		"authorization_endpoint":                         base + "/oauth/authorize",
 		"token_endpoint":                                 base + "/oauth/token",
@@ -275,5 +323,14 @@ func (h *oauthHandlers) metadataDoc() map[string]any {
 		"introspection_endpoint_auth_methods_supported":  []string{authcode.MethodBasic, authcode.MethodPost, "none"},
 		"revocation_endpoint_auth_methods_supported":     []string{authcode.MethodBasic, authcode.MethodPost, "none"},
 		"authorization_response_iss_parameter_supported": true,
+		"pushed_authorization_request_endpoint":          base + "/oauth/par",
 	}
+	if h.loginEnabled {
+		doc["device_authorization_endpoint"] = base + "/oauth/device_authorization"
+		doc["grant_types_supported"] = append(doc["grant_types_supported"].([]string), authcode.GrantDeviceCode)
+	}
+	if h.registrationEnabled {
+		doc["registration_endpoint"] = base + "/connect/register"
+	}
+	return doc
 }
