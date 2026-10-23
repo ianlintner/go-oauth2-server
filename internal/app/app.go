@@ -17,6 +17,7 @@ import (
 	"github.com/ianlintner/go-oauth2-server/internal/authcode"
 	"github.com/ianlintner/go-oauth2-server/internal/config"
 	"github.com/ianlintner/go-oauth2-server/internal/conformance"
+	"github.com/ianlintner/go-oauth2-server/internal/dpop"
 	"github.com/ianlintner/go-oauth2-server/internal/jwt"
 	"github.com/ianlintner/go-oauth2-server/internal/oauth"
 	"github.com/ianlintner/go-oauth2-server/internal/server"
@@ -28,6 +29,11 @@ import (
 // shutdownTimeout bounds graceful shutdown so a stuck connection cannot hang
 // the process indefinitely.
 const shutdownTimeout = 10 * time.Second
+
+// dpopReplayCapacity bounds the in-memory DPoP jti replay store. Entries live
+// about 90 seconds, so this tolerates roughly a thousand fresh proofs per
+// second before the store fails closed with temporarily_unavailable.
+const dpopReplayCapacity = 100_000
 
 // Options are the injectable parts of Run; zero values mean production
 // behavior.
@@ -156,6 +162,9 @@ func Run(ctx context.Context, opts Options) error {
 			Issuer:      cfg.Issuer,
 			Tokens:      tokens,
 			Logger:      log,
+			// DPoP replay state is per process and lost on restart; see
+			// docs/sender-constrained.md for the accepted limits.
+			DPoP: dpop.NewVerifier(dpop.Config{Clock: oauth.SystemClock{}, Replay: dpop.NewMemoryReplayStore(oauth.SystemClock{}, dpopReplayCapacity)}),
 
 			RegistrationEnabled: cfg.DynamicRegistration,
 			RegistrationScopes:  []string{"openid", "read"},

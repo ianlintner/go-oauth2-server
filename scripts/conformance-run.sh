@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
-# Runs the shared contract's core, token-lifecycle and oidc-basic profiles (plus this
+# Runs the shared contract's core, token-lifecycle, oidc-basic, extended-grants and
+# sender-constrained profiles (plus this
 # repo's supplementary scenarios) against a locally started system under test.
 #
 # usage: scripts/conformance-run.sh [CONTRACT_DIR]            (default: .contract)
@@ -125,4 +126,11 @@ pnpm --dir "$contract_dir/runner" exec tsx src/cli.ts run \
   --base-url "http://127.0.0.1:${port}" \
   --scenarios "$work/scenarios" \
   --profile extended-grants \
+  --implementation "${sut}-oauth2-server"
+
+echo "== contract runner: sender-constrained profile against the ${sut} server (port ${port}) =="
+pnpm --dir "$contract_dir/runner" exec tsx src/cli.ts run \
+  --base-url "http://127.0.0.1:${port}" \
+  --scenarios "$work/scenarios" \
+  --profile sender-constrained \
   --implementation "${sut}-oauth2-server"

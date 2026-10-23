@@ -332,8 +332,12 @@ func TestThumbprintOfCnfMatchesProofKey(t *testing.T) {
 	// Guards the base64url(SHA-256(RFC 7638 thumbprint)) encoding used for cnf.jkt
 	// against an independent computation over the canonical member JSON.
 	k := newKey(t)
-	x := base64.RawURLEncoding.EncodeToString(k.priv.PublicKey.X.FillBytes(make([]byte, 32)))
-	y := base64.RawURLEncoding.EncodeToString(k.priv.PublicKey.Y.FillBytes(make([]byte, 32)))
+	point, err := k.priv.PublicKey.Bytes() // 0x04 || X || Y
+	if err != nil || len(point) != 65 {
+		t.Fatalf("public key bytes: %v (%d)", err, len(point))
+	}
+	x := base64.RawURLEncoding.EncodeToString(point[1:33])
+	y := base64.RawURLEncoding.EncodeToString(point[33:])
 	sum := sha256.Sum256([]byte(`{"crv":"P-256","kty":"EC","x":"` + x + `","y":"` + y + `"}`))
 	want := base64.RawURLEncoding.EncodeToString(sum[:])
 	if k.jkt(t) != want || !hmac.Equal([]byte(k.jkt(t)), []byte(want)) {
