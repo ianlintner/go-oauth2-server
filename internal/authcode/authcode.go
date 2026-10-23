@@ -286,6 +286,16 @@ func (s *Service) Token(ctx context.Context, authorization string, p oauth.Param
 	if !grantAllowed(client, grant) {
 		return TokenResponse{}, oauth.UnauthorizedClient("client may not use this grant type")
 	}
+	if oauth.DPoPKey(ctx) != "" {
+		// RFC 9449 §5: a public client's refresh token must be bound to the
+		// proof key too. That binding is not implemented, so refuse DPoP for
+		// public clients instead of issuing a key-bound access token next to
+		// an unbound, stealable refresh token. Without a token service there
+		// is no JWT to carry cnf, so DPoP cannot be honored either.
+		if client.Public || s.tokens == nil {
+			return TokenResponse{}, oauth.InvalidRequest("DPoP is not supported for this client")
+		}
+	}
 
 	switch grant {
 	case GrantAuthorizationCode:
@@ -445,7 +455,7 @@ func (s *Service) issueTokens(ctx context.Context, clientID, subject, scope stri
 	resp := TokenResponse{TokenType: "Bearer", Scope: scope}
 
 	if s.tokens != nil {
-		at, err := s.tokens.Issue(ctx, token.IssueParams{ClientID: clientID, Subject: subject, Scope: scope})
+		at, err := s.tokens.Issue(ctx, token.IssueParams{ClientID: clientID, Subject: subject, Scope: scope, JKT: oauth.DPoPKey(ctx)})
 		if err != nil {
 			return TokenResponse{}, err
 		}

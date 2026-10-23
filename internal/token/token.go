@@ -34,6 +34,9 @@ const AccessTokenType = "at+jwt"
 // TokenTypeName is the RFC 6749 §7.1 token_type value for a bearer token.
 const TokenTypeName = "Bearer"
 
+// TokenTypeDPoP is the token_type of a DPoP-bound access token (RFC 9449 §5).
+const TokenTypeDPoP = "DPoP"
+
 // jtiBytes is the entropy of an access-token jti (128 bits).
 const jtiBytes = 16
 
@@ -124,6 +127,11 @@ type IssueParams struct {
 	ClientID string
 	Subject  string // the resource-owner id, used as the "sub" claim
 	Scope    string // space-separated scopes
+
+	// JKT, when set, binds the token to the DPoP proof key with this RFC 7638
+	// thumbprint through a cnf.jkt claim (RFC 9449 §6.1) and makes the token
+	// type DPoP. Empty mints an ordinary bearer token.
+	JKT string
 }
 
 // AccessToken is an issued access token: the signed JWT value plus the
@@ -168,6 +176,11 @@ func (s *Service) Issue(ctx context.Context, p IssueParams) (AccessToken, error)
 		"scope":     p.Scope,
 		"kid":       s.signer.Kid(),
 	}
+	tokenType := TokenTypeName
+	if p.JKT != "" {
+		claims["cnf"] = map[string]any{"jkt": p.JKT}
+		tokenType = TokenTypeDPoP
+	}
 	value, err := s.signer.Sign(ctx, claims)
 	if err != nil {
 		return AccessToken{}, oauth.ServerError(err)
@@ -187,7 +200,7 @@ func (s *Service) Issue(ctx context.Context, p IssueParams) (AccessToken, error)
 
 	return AccessToken{
 		Value:     value,
-		TokenType: TokenTypeName,
+		TokenType: tokenType,
 		JTI:       jti,
 		IssuedAt:  now,
 		ExpiresAt: exp,
@@ -208,6 +221,8 @@ type TokenInfo struct {
 	Issuer    string
 	ExpiresAt int64
 	IssuedAt  int64
+	// JKT is the DPoP proof-key thumbprint the token is bound to, or empty.
+	JKT string
 }
 
 // VerifiedToken is the identity carried by a validated access token, for a
@@ -217,6 +232,9 @@ type VerifiedToken struct {
 	Subject  string
 	Scope    string
 	JTI      string
+	// JKT is the cnf.jkt binding; non-empty means the token is DPoP-bound and
+	// must be presented with a matching proof, never as a bare Bearer.
+	JKT string
 }
 
 // claims is the validated RFC 9068 claim set.
@@ -226,6 +244,7 @@ type claims struct {
 	ClientID string
 	JTI      string
 	Scope    string
+	JKT      string
 	IssuedAt time.Time
 	Expires  time.Time
 }
@@ -272,6 +291,18 @@ func (s *Service) resolve(ctx context.Context, token string) (claims, error) {
 	c.JTI = jti
 
 	c.Scope, _ = m["scope"].(string)
+
+	// Sender constraint. A cnf this server did not mint (anything but a
+	// non-empty jkt) is refused rather than read as "unbound": treating an
+	// unknown confirmation method as absent would downgrade it to a bearer.
+	if raw, present := m["cnf"]; present {
+		cnf, _ := raw.(map[string]any)
+		jkt, _ := cnf["jkt"].(string)
+		if jkt == "" {
+			return claims{}, errInvalidToken
+		}
+		c.JKT = jkt
+	}
 
 	iat, ok := numClaim(m["iat"])
 	if !ok {
@@ -326,6 +357,7 @@ func (s *Service) VerifyAccessToken(ctx context.Context, token string) (Verified
 		Subject:  c.Subject,
 		Scope:    c.Scope,
 		JTI:      c.JTI,
+		JKT:      c.JKT,
 	}, nil
 }
 
@@ -352,13 +384,18 @@ func (s *Service) Introspect(ctx context.Context, token string) (TokenInfo, erro
 		return inactive, nil
 	}
 
+	tokenType := TokenTypeName
+	if c.JKT != "" {
+		tokenType = TokenTypeDPoP
+	}
 	return TokenInfo{
 		Active:    true,
 		Scope:     rec.Scope,
 		ClientID:  rec.ClientID,
 		Username:  rec.UserID,
 		Sub:       rec.UserID,
-		TokenType: TokenTypeName,
+		TokenType: tokenType,
+		JKT:       c.JKT,
 		JTI:       rec.JTI,
 		Issuer:    s.issuer,
 		ExpiresAt: rec.ExpiresAt.Unix(),

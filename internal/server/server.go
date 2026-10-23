@@ -13,6 +13,7 @@ import (
 	"net/http"
 
 	"github.com/ianlintner/go-oauth2-server/internal/authcode"
+	"github.com/ianlintner/go-oauth2-server/internal/dpop"
 	"github.com/ianlintner/go-oauth2-server/internal/health"
 	"github.com/ianlintner/go-oauth2-server/internal/session"
 	"github.com/ianlintner/go-oauth2-server/internal/token"
@@ -37,6 +38,11 @@ type Deps struct {
 	// revocation, JWKS) and discovery extension. When Service/Sessions are
 	// supplied it must also be non-nil, or those endpoints answer 500.
 	Tokens *token.Service
+
+	// DPoP enables RFC 9449 sender-constrained access tokens at the token
+	// endpoint and /oauth/userinfo. Nil leaves DPoP off: a DPoP header on a
+	// token request is ignored and bearer tokens are issued.
+	DPoP *dpop.Verifier
 
 	// Logger receives internal error causes, which are never sent to clients.
 	Logger *slog.Logger
