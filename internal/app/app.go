@@ -20,8 +20,10 @@ import (
 	"github.com/ianlintner/go-oauth2-server/internal/dpop"
 	"github.com/ianlintner/go-oauth2-server/internal/jwt"
 	"github.com/ianlintner/go-oauth2-server/internal/oauth"
+	"github.com/ianlintner/go-oauth2-server/internal/observability"
 	"github.com/ianlintner/go-oauth2-server/internal/server"
 	"github.com/ianlintner/go-oauth2-server/internal/session"
+	"github.com/ianlintner/go-oauth2-server/internal/storage/postgres"
 	"github.com/ianlintner/go-oauth2-server/internal/storage/sqlite"
 	"github.com/ianlintner/go-oauth2-server/internal/token"
 )
@@ -75,7 +77,12 @@ func Run(ctx context.Context, opts Options) error {
 		return err
 	}
 
-	st, err := sqlite.Open(cfg.StorageDSN)
+	var st oauth.Store
+	if cfg.StorageDriver == "postgres" {
+		st, err = postgres.Open(cfg.StorageDSN)
+	} else {
+		st, err = sqlite.Open(cfg.StorageDSN)
+	}
 	if err != nil {
 		closeListener()
 		return fmt.Errorf("open storage: %w", err)
@@ -153,8 +160,13 @@ func Run(ctx context.Context, opts Options) error {
 		}
 	}
 
+	var metrics *observability.Metrics
+	if cfg.MetricsEnabled {
+		metrics = observability.New()
+	}
 	srv := &http.Server{
-		Handler: server.New(server.Deps{
+		Handler: observability.Trace(log, server.New(server.Deps{
+			Metrics:     metrics,
 			Ping:        st.Ping,
 			Conformance: cfg.ConformanceMode,
 			Service:     svc,
@@ -168,7 +180,7 @@ func Run(ctx context.Context, opts Options) error {
 
 			RegistrationEnabled: cfg.DynamicRegistration,
 			RegistrationScopes:  []string{"openid", "read"},
-		}),
+		})),
 		ReadHeaderTimeout: 5 * time.Second,
 	}
 

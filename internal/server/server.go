@@ -15,12 +15,15 @@ import (
 	"github.com/ianlintner/go-oauth2-server/internal/authcode"
 	"github.com/ianlintner/go-oauth2-server/internal/dpop"
 	"github.com/ianlintner/go-oauth2-server/internal/health"
+	"github.com/ianlintner/go-oauth2-server/internal/observability"
 	"github.com/ianlintner/go-oauth2-server/internal/session"
 	"github.com/ianlintner/go-oauth2-server/internal/token"
 )
 
 // Deps are the collaborators the router needs.
 type Deps struct {
+	// Metrics is opt-in; /metrics is absent when nil.
+	Metrics *observability.Metrics
 	// Ping reports whether the backing store is reachable; nil means always up.
 	Ping func(context.Context) error
 	// Conformance advertises test mode on /health (see internal/conformance)
@@ -72,6 +75,9 @@ func New(d Deps) http.Handler {
 	mux := http.NewServeMux()
 	mux.Handle("GET /healthz", health.NewHandler())
 	mux.Handle("GET /health", health.NewReadyHandler(ping, d.Conformance))
+	if d.Metrics != nil {
+		mux.Handle("GET /metrics", d.Metrics.Handler())
+	}
 
 	if d.Service != nil && d.Sessions != nil {
 		h := newOAuthHandlers(d)
@@ -97,7 +103,11 @@ func New(d Deps) http.Handler {
 			mux.HandleFunc("POST /auth/login", h.loginSubmit)
 		}
 	}
-	return hardenHeaders(mux)
+	handler := hardenHeaders(mux)
+	if d.Metrics != nil {
+		handler = d.Metrics.Wrap(handler)
+	}
+	return handler
 }
 
 // hardenHeaders sets response headers that are safe on every route: no MIME
