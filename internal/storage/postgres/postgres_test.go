@@ -77,6 +77,12 @@ func TestOpenRejectsMissingDSN(t *testing.T) {
 		t.Fatalf("Open returned %v", err)
 	}
 }
+func TestConnectionErrorDoesNotExposePassword(t *testing.T) {
+	_, err := Open("postgres://someone:never-log-this-password@127.0.0.1:1/absent?sslmode=disable&connect_timeout=1")
+	if err == nil || strings.Contains(err.Error(), "never-log-this-password") {
+		t.Fatal("connection error missing or exposed password")
+	}
+}
 func TestBind(t *testing.T) {
 	if got := bind("SELECT ? WHERE x = ?"); got != "SELECT $1 WHERE x = $2" {
 		t.Fatal(fmt.Sprint(got))
