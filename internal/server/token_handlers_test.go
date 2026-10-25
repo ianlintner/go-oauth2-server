@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/ianlintner/go-oauth2-server/internal/authcode"
+	"github.com/ianlintner/go-oauth2-server/internal/dpop"
 	"github.com/ianlintner/go-oauth2-server/internal/jwt"
 	"github.com/ianlintner/go-oauth2-server/internal/oauth"
 	"github.com/ianlintner/go-oauth2-server/internal/secret"
@@ -48,6 +49,8 @@ func newTokenEnv(t *testing.T) *tokenEnv {
 		{ID: "client-a", SecretHash: hash("test-only-secret"), AuthMethod: "client_secret_basic", RedirectURIs: []string{callback}, GrantTypes: []string{"authorization_code"}},
 		{ID: "client-b", SecretHash: hash("other-test-secret"), AuthMethod: "client_secret_basic", RedirectURIs: []string{callback}, GrantTypes: []string{"authorization_code"}},
 		{ID: "client-public", Public: true, AuthMethod: "none", RedirectURIs: []string{callback}, GrantTypes: []string{"authorization_code"}},
+		{ID: "client-cc", SecretHash: hash("test-only-secret"), AuthMethod: "client_secret_basic", GrantTypes: []string{"client_credentials"}},
+		{ID: "client-public-cc", Public: true, AuthMethod: "none", GrantTypes: []string{"client_credentials"}},
 	}
 	for _, c := range clients {
 		if err := st.Clients().Create(ctx, c); err != nil {
@@ -84,7 +87,8 @@ func newTokenEnv(t *testing.T) *tokenEnv {
 	if err != nil {
 		t.Fatal(err)
 	}
-	h := server.New(server.Deps{Service: svc, Sessions: sess, Issuer: issuer, Conformance: true, Tokens: tokens})
+	proofs := dpop.NewVerifier(dpop.Config{Clock: clk, Replay: dpop.NewMemoryReplayStore(clk, 1000)})
+	h := server.New(server.Deps{Service: svc, Sessions: sess, Issuer: issuer, Conformance: true, Tokens: tokens, DPoP: proofs})
 	env := &handlerEnv{h: h, store: st, clock: clk}
 	return &tokenEnv{handlerEnv: env, tokens: tokens}
 }

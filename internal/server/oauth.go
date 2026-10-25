@@ -11,6 +11,7 @@ import (
 	"strings"
 
 	"github.com/ianlintner/go-oauth2-server/internal/authcode"
+	"github.com/ianlintner/go-oauth2-server/internal/dpop"
 	"github.com/ianlintner/go-oauth2-server/internal/oauth"
 	"github.com/ianlintner/go-oauth2-server/internal/session"
 	"github.com/ianlintner/go-oauth2-server/internal/token"
@@ -24,6 +25,7 @@ type oauthHandlers struct {
 	svc                 *authcode.Service
 	sessions            *session.Manager
 	tokens              *token.Service
+	dpop                *dpop.Verifier
 	issuer              string
 	loginEnabled        bool
 	registrationScopes  []string
@@ -36,7 +38,7 @@ func newOAuthHandlers(d Deps) *oauthHandlers {
 	if lg == nil {
 		lg = slog.Default()
 	}
-	return &oauthHandlers{svc: d.Service, sessions: d.Sessions, tokens: d.Tokens, issuer: d.Issuer, loginEnabled: d.Conformance, registrationScopes: d.RegistrationScopes, registrationEnabled: d.RegistrationEnabled, log: lg}
+	return &oauthHandlers{svc: d.Service, sessions: d.Sessions, tokens: d.Tokens, dpop: d.DPoP, issuer: d.Issuer, loginEnabled: d.Conformance, registrationScopes: d.RegistrationScopes, registrationEnabled: d.RegistrationEnabled, log: lg}
 }
 
 // fail logs the internal cause of a server_error and writes the typed error.
@@ -270,7 +272,12 @@ func (h *oauthHandlers) token(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	tok, err := h.svc.Token(r.Context(), r.Header.Get("Authorization"), p)
+	ctx, err := h.withTokenEndpointProof(r.Context(), r)
+	if err != nil {
+		h.fail(w, r, err)
+		return
+	}
+	tok, err := h.svc.Token(ctx, r.Header.Get("Authorization"), p)
 	if err != nil {
 		h.fail(w, r, err)
 		return
@@ -331,6 +338,9 @@ func (h *oauthHandlers) metadataDoc() map[string]any {
 	}
 	if h.registrationEnabled {
 		doc["registration_endpoint"] = base + "/connect/register"
+	}
+	if h.dpop != nil {
+		doc["dpop_signing_alg_values_supported"] = dpopAlgs()
 	}
 	return doc
 }

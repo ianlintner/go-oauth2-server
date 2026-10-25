@@ -2,7 +2,7 @@
 # `oauth2-conformance` runner contract
 # (https://github.com/ianlintner/oauth2-conformance).
 #
-# Pinned contract commit: 604c62d6c98d8685ef2a1296d12014615dc38390
+# Pinned contract commit: 985fef7aca4835a7ab4fb92c94e8f979f7308189
 # (also pinned in conformance-contract.yaml; the manifest schema's `contract`
 # field is a full 40-char SHA before a tag is cut, per ROADMAP.md flow step 2).
 #
@@ -23,5 +23,9 @@
 # runner defers rather than fails; this implementation intentionally matches the
 # reference SUT's behaviour for both.
 implementation: go-oauth2-server
-contract: 604c62d6c98d8685ef2a1296d12014615dc38390
-profiles: [core, token-lifecycle, oidc-basic, extended-grants]
+contract: 985fef7aca4835a7ab4fb92c94e8f979f7308189
+# sender-constrained (v0.5): see docs/sender-constrained.md. Only the 7
+# stable DPoP scenarios of the contract are exercised and pass; the other 28
+# are draft, so this claim does NOT cover nonces, mTLS, ath/key-binding
+# resource scenarios or rate limiting.
+profiles: [core, token-lifecycle, oidc-basic, extended-grants, sender-constrained]

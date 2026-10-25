@@ -35,6 +35,9 @@ const (
 	// RFC 9126 §4 / OIDC Core §3.1.2.6 request_uri error.
 	CodeInvalidRequestURI Code = "invalid_request_uri"
 
+	// RFC 9449 §5 DPoP error for a missing or invalid proof.
+	CodeInvalidDPoPProof Code = "invalid_dpop_proof"
+
 	// RFC 7591 §3.2.2 registration errors.
 	CodeInvalidRedirectURI    Code = "invalid_redirect_uri"
 	CodeInvalidClientMetadata Code = "invalid_client_metadata"
@@ -160,6 +163,12 @@ func InvalidRedirectURI(description string) *Error {
 // InvalidClientMetadata builds an RFC 7591 invalid_client_metadata error.
 func InvalidClientMetadata(description string) *Error {
 	return newError(CodeInvalidClientMetadata, description)
+}
+
+// InvalidDPoPProof builds an RFC 9449 invalid_dpop_proof error. The public
+// description is deliberately generic: which check failed is not disclosed.
+func InvalidDPoPProof() *Error {
+	return newError(CodeInvalidDPoPProof, "the DPoP proof is missing or invalid")
 }
 
 // AccessDenied builds an access_denied error.
