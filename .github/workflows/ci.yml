@@ -17,6 +17,19 @@ jobs:
     name: verify
     runs-on: ubuntu-latest
     timeout-minutes: 20
+    # Ephemeral CI fixture only; there is no deployed database or collector.
+    services:
+      postgres:
+        image: postgres:18
+        env:
+          POSTGRES_USER: oauth_test
+          POSTGRES_PASSWORD: ci-only-password
+          POSTGRES_DB: oauth_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U oauth_test -d oauth_test"
+          --health-interval 10s --health-timeout 5s --health-retries 5
     steps:
       - uses: actions/checkout@v4
 
@@ -43,6 +56,8 @@ jobs:
           "$(go env GOPATH)/bin/govulncheck" ./...
 
       - name: go test -race
+        env:
+          OAUTH2_POSTGRES_TEST_DSN: postgres://oauth_test:ci-only-password@127.0.0.1:5432/oauth_test?sslmode=disable
         run: go test -race ./...
 
       - name: SUT smoke test (startup, readiness, fail-closed config)

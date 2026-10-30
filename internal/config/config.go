@@ -53,6 +53,10 @@ type Config struct {
 	SessionSecret  Secret
 
 	StorageDSN string
+	// StorageDriver selects the tested SQLite or PostgreSQL adapter.
+	StorageDriver string
+	// MetricsEnabled exposes /metrics on the configured listener when opted in.
+	MetricsEnabled bool
 
 	CookieSecure           bool
 	AllowInsecureRedirects bool
@@ -131,6 +135,9 @@ func Load(getenv func(string) string) (Config, error) {
 	if cfg.AllowInsecureRedirects, err = boolEnv(get("OAUTH2_ALLOW_INSECURE_REDIRECTS"), false); err != nil {
 		fail("OAUTH2_ALLOW_INSECURE_REDIRECTS %v", err)
 	}
+	if cfg.MetricsEnabled, err = boolEnv(get("OAUTH2_METRICS_ENABLED"), false); err != nil {
+		fail("OAUTH2_METRICS_ENABLED %v", err)
+	}
 
 	// Conformance mode is a strict "1": no truthy synonyms enable test-mode
 	// credentials by accident.
@@ -154,6 +161,13 @@ func Load(getenv func(string) string) (Config, error) {
 	}
 	if cfg.StorageDSN == "" {
 		cfg.StorageDSN = MemoryDSN
+	}
+	if strings.HasPrefix(cfg.StorageDSN, "postgres://") || strings.HasPrefix(cfg.StorageDSN, "postgresql://") {
+		cfg.StorageDriver = "postgres"
+	} else if strings.Contains(cfg.StorageDSN, "://") {
+		fail("OAUTH2_STORAGE_DSN has an unsupported database scheme")
+	} else {
+		cfg.StorageDriver = "sqlite"
 	}
 	switch {
 	case production && cfg.StorageDSN == MemoryDSN:
