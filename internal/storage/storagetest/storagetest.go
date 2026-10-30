@@ -457,6 +457,76 @@ func testRefreshTokens(t *testing.T, f Factory) {
 			t.Fatalf("wins=%d replays=%d, want 1/%d", wins.Load(), replays.Load(), workers-1)
 		}
 	})
+
+	// A family revocation that is in flight is a barrier for every rotation in
+	// that family: a rotation must either finish before the revoke starts or
+	// observe it, never succeed against a revoke that is about to commit.
+	// Under PostgreSQL READ COMMITTED the single-statement "family not revoked"
+	// check cannot see the revoke's uncommitted family row, so without
+	// per-family serialisation the rotation below succeeds while the revoke is
+	// still open. SQLite serialises writers, so it passes either way.
+	t.Run("rotation racing an in-flight family revoke does not succeed", func(t *testing.T) {
+		s := newStore(t, f)
+		mustNoErr(t, s.RefreshTokens().Create(ctx, sampleRefresh("live", "fam-race")), "create live")
+
+		revokeHeld := make(chan struct{})
+		release := make(chan struct{})
+		txDone := make(chan error, 1)
+		go func() {
+			txDone <- s.WithTx(ctx, func(ctx context.Context, tx oauth.Repositories) error {
+				if _, err := tx.RefreshTokens().RevokeFamily(ctx, "fam-race", ref); err != nil {
+					return err
+				}
+				close(revokeHeld)
+				<-release
+				return nil
+			})
+		}()
+		select {
+		case <-revokeHeld:
+		case err := <-txDone:
+			t.Fatalf("revoke transaction ended early: %v", err)
+		case <-time.After(10 * time.Second):
+			t.Fatal("revoke transaction did not start")
+		}
+
+		// A sibling in the same family, minted concurrently with the revoke
+		// (the rotate -> create-child flow), whose row the revoke's UPDATE did
+		// not see because it did not exist yet.
+		rotated := make(chan error, 1)
+		go func() {
+			if err := s.RefreshTokens().Create(ctx, sampleRefresh("late", "fam-race")); err != nil {
+				rotated <- fmt.Errorf("create late child: %w", err)
+				return
+			}
+			_, err := s.RefreshTokens().Rotate(ctx, "late", ref)
+			rotated <- err
+		}()
+
+		// Give a non-serialised implementation time to finish the rotation
+		// while the revoke is still open; a serialised one blocks here.
+		var got error
+		finished := false
+		select {
+		case got = <-rotated:
+			finished = true
+		case <-time.After(500 * time.Millisecond):
+		}
+		close(release)
+		mustNoErr(t, <-txDone, "revoke transaction")
+		if finished && got == nil {
+			t.Fatal("rotation succeeded while a revoke of its family was in flight")
+		}
+		if !finished {
+			got = <-rotated
+		}
+		wantErr(t, got, oauth.ErrAlreadyConsumed, "rotate racing revoke")
+		// The original member and the late one both stay dead afterwards.
+		for _, h := range []string{"live", "late"} {
+			_, err := s.RefreshTokens().Rotate(ctx, h, ref)
+			wantErr(t, err, oauth.ErrAlreadyConsumed, "rotate after revoke committed: "+h)
+		}
+	})
 }
 
 func testAccessTokens(t *testing.T, f Factory) {

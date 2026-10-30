@@ -105,7 +105,15 @@ func (r repos) AccessTokens() oauth.AccessTokenRepository     { return r.access 
 func (r repos) DeviceCodes() oauth.DeviceCodeRepository       { return r.device }
 func (r repos) PushedRequests() oauth.PushedRequestRepository { return r.pushed }
 
+// txBeginner is implemented by the pool-bound execer, so a repository that is
+// not already inside a transaction can open one for a multi-statement operation.
+type txBeginner interface {
+	beginTx(context.Context) (*sql.Tx, error)
+}
+
 type rebindDB struct{ *sql.DB }
+
+func (d rebindDB) beginTx(c context.Context) (*sql.Tx, error) { return d.DB.BeginTx(c, nil) }
 
 func (d rebindDB) ExecContext(c context.Context, q string, a ...any) (sql.Result, error) {
 	return d.DB.ExecContext(c, bind(q), a...)
