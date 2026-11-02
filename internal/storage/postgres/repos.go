@@ -206,50 +206,116 @@ func (r *refreshRepo) GetByHash(ctx context.Context, tokenHash string) (oauth.Re
 	return t, nil
 }
 
-// Rotate latches the token in one statement that also checks the family is not
-// revoked, so a revoke can never interleave between "is it revoked?" and "mark
-// it rotated", and a token inserted into an already-revoked family is dead on
-// arrival.
+// familyLockClass namespaces the per-family advisory locks away from every
+// other advisory lock this schema takes (the migration lock uses the one-key
+// form, which is a different lock space).
+const familyLockClass = 0x6f326672 // "o2fr"
+
+// lockFamily takes a transaction-scoped advisory lock for one refresh family
+// and holds it until the transaction commits or rolls back. Rotate and
+// RevokeFamily both take it, which makes them mutually exclusive per family.
+//
+// Row-level conditions alone cannot do this under READ COMMITTED: Rotate's
+// "family is not revoked" NOT EXISTS subquery reads the statement's snapshot,
+// so it cannot see a RevokeFamily that has inserted its family row but not yet
+// committed, and the UPDATE has no row in common with that insert to wait on.
+// With the lock, a rotation that arrives during a revoke waits for the revoke
+// to commit and then runs its UPDATE as a new statement with a fresh snapshot
+// that sees the revoked family; a revoke that arrives during a rotation waits
+// for the rotation to commit and then kills the (now rotated) family.
+func lockFamily(ctx context.Context, db execer, familyID string) error {
+	_, err := db.ExecContext(ctx, `SELECT pg_advisory_xact_lock(?::int, hashtext(?))`, familyLockClass, familyID)
+	return err
+}
+
+// inTx runs fn in a transaction. The refresh repository already inside a
+// WithTx transaction joins it (the family lock then lasts until that outer
+// transaction ends); one bound to the pool opens its own, so the lock spans the
+// whole operation instead of a single autocommit statement.
+func inTx(ctx context.Context, db execer, fn func(execer) error) error {
+	b, ok := db.(txBeginner)
+	if !ok {
+		return fn(db)
+	}
+	tx, err := b.beginTx(ctx)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = tx.Rollback() }()
+	if err = fn(rebindTx{tx}); err != nil {
+		return err
+	}
+	return tx.Commit()
+}
+
+// Rotate latches the token and, in the same statement, requires its family not
+// to be revoked, so a token inserted into an already-revoked family is dead on
+// arrival. The per-family lock (see lockFamily) closes the window against a
+// concurrent, not yet committed RevokeFamily. A family_id never changes, so it
+// is safe to read it before taking the lock.
 func (r *refreshRepo) Rotate(ctx context.Context, tokenHash string, now time.Time) (oauth.RefreshToken, error) {
-	var (
-		t       oauth.RefreshToken
-		expires int64
-	)
-	err := r.db.QueryRowContext(ctx,
-		`UPDATE refresh_tokens SET rotated_at = ?
-		 WHERE token_hash = ? AND rotated_at IS NULL
-		   AND NOT EXISTS (SELECT 1 FROM refresh_families f WHERE f.family_id = refresh_tokens.family_id)
-		 RETURNING token_hash, family_id, client_id, user_id, scope, expires_at`,
-		nanos(now), tokenHash).
-		Scan(&t.TokenHash, &t.FamilyID, &t.ClientID, &t.UserID, &t.Scope, &expires)
+	var familyID string
+	err := r.db.QueryRowContext(ctx, `SELECT family_id FROM refresh_tokens WHERE token_hash = ?`, tokenHash).Scan(&familyID)
 	if errors.Is(err, sql.ErrNoRows) {
-		return oauth.RefreshToken{}, missOrConsumed(ctx, r.db, `SELECT 1 FROM refresh_tokens WHERE token_hash = ?`, tokenHash)
+		return oauth.RefreshToken{}, oauth.ErrNotFound
 	}
 	if err != nil {
 		return oauth.RefreshToken{}, err
 	}
-	t.ExpiresAt = fromNanos(expires)
+	var t oauth.RefreshToken
+	err = inTx(ctx, r.db, func(db execer) error {
+		if err := lockFamily(ctx, db, familyID); err != nil {
+			return err
+		}
+		var expires int64
+		err := db.QueryRowContext(ctx,
+			`UPDATE refresh_tokens SET rotated_at = ?
+			 WHERE token_hash = ? AND rotated_at IS NULL
+			   AND NOT EXISTS (SELECT 1 FROM refresh_families f WHERE f.family_id = refresh_tokens.family_id)
+			 RETURNING token_hash, family_id, client_id, user_id, scope, expires_at`,
+			nanos(now), tokenHash).
+			Scan(&t.TokenHash, &t.FamilyID, &t.ClientID, &t.UserID, &t.Scope, &expires)
+		if errors.Is(err, sql.ErrNoRows) {
+			return missOrConsumed(ctx, db, `SELECT 1 FROM refresh_tokens WHERE token_hash = ?`, tokenHash)
+		}
+		if err != nil {
+			return err
+		}
+		t.ExpiresAt = fromNanos(expires)
+		return nil
+	})
+	if err != nil {
+		return oauth.RefreshToken{}, err
+	}
 	return t, nil
 }
 
 // RevokeFamily records the family as revoked (which blocks every member,
 // including tokens created later) and returns how many still-live members it
-// newly killed. Both statements run under the caller's transaction semantics;
-// each is individually atomic and idempotent, so a crash between them is
-// repaired by repeating the call.
+// newly killed. It holds the per-family lock (see lockFamily) across both
+// statements, so a concurrent Rotate of the same family either completed
+// before this call or observes the revoked family. Each statement is idempotent,
+// so a failed call is repaired by repeating it.
 func (r *refreshRepo) RevokeFamily(ctx context.Context, familyID string, now time.Time) (int, error) {
-	if _, err := r.db.ExecContext(ctx,
-		`INSERT INTO refresh_families (family_id, revoked_at) VALUES (?, ?) ON CONFLICT (family_id) DO NOTHING`,
-		familyID, nanos(now)); err != nil {
-		return 0, err
-	}
-	res, err := r.db.ExecContext(ctx,
-		`UPDATE refresh_tokens SET rotated_at = ? WHERE family_id = ? AND rotated_at IS NULL`,
-		nanos(now), familyID)
-	if err != nil {
-		return 0, err
-	}
-	n, err := res.RowsAffected()
+	var n int64
+	err := inTx(ctx, r.db, func(db execer) error {
+		if err := lockFamily(ctx, db, familyID); err != nil {
+			return err
+		}
+		if _, err := db.ExecContext(ctx,
+			`INSERT INTO refresh_families (family_id, revoked_at) VALUES (?, ?) ON CONFLICT (family_id) DO NOTHING`,
+			familyID, nanos(now)); err != nil {
+			return err
+		}
+		res, err := db.ExecContext(ctx,
+			`UPDATE refresh_tokens SET rotated_at = ? WHERE family_id = ? AND rotated_at IS NULL`,
+			nanos(now), familyID)
+		if err != nil {
+			return err
+		}
+		n, err = res.RowsAffected()
+		return err
+	})
 	if err != nil {
 		return 0, err
 	}
