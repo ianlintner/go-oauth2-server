@@ -6,48 +6,154 @@ import (
 	"database/sql"
 	"embed"
 	"encoding/hex"
-	"errors"
 	"fmt"
+	"io/fs"
+	"path"
+	"sort"
+	"strconv"
+	"strings"
 )
 
 //go:embed migrations/*.sql
 var migrations embed.FS
 
-// migrate checks the immutable schema checksum and serializes concurrent opens.
-func migrate(ctx context.Context, db *sql.DB) error {
-	body, err := migrations.ReadFile("migrations/0001_initial.sql")
+type migration struct {
+	version  int
+	name     string
+	sql      string
+	checksum string
+}
+
+// migrate applies the numbered migrations in fsys/dir that the database has not
+// yet recorded, each in its own transaction. It refuses a database that holds a
+// version this binary does not know (a downgrade) or whose recorded checksum no
+// longer matches the embedded file (an edited migration).
+//
+// A session-level advisory lock (pg_advisory_lock, held by the dedicated
+// connection this function borrows) serializes concurrent opens for the whole
+// run. The previous single-migration scheme used pg_advisory_xact_lock around
+// one transaction carrying the whole schema, but a transaction-scoped lock
+// releases as soon as that transaction commits, so it cannot guard a run that
+// applies several migrations in separate transactions (which is what keeps an
+// earlier migration durable when a later one fails). The session lock is the
+// same advisory-lock key and forces contenders to line up before any of them
+// reads the applied set or applies a migration.
+func migrate(ctx context.Context, db *sql.DB, fsys fs.FS, dir string) error {
+	migs, err := loadMigrations(fsys, dir)
 	if err != nil {
 		return err
 	}
-	sum := sha256.Sum256(body)
-	checksum := hex.EncodeToString(sum[:])
-	tx, err := db.BeginTx(ctx, nil)
+
+	conn, err := db.Conn(ctx)
+	if err != nil {
+		return fmt.Errorf("borrow connection: %w", err)
+	}
+	defer conn.Close()
+
+	if _, err := conn.ExecContext(ctx, `SELECT pg_advisory_lock(762945038215)`); err != nil {
+		return err
+	}
+	defer func() {
+		// Reset context so an already-cancelled ctx cannot block the unlock.
+		_, _ = conn.ExecContext(context.Background(), `SELECT pg_advisory_unlock(762945038215)`)
+	}()
+
+	if _, err := conn.ExecContext(ctx, `CREATE TABLE IF NOT EXISTS schema_migrations (version integer PRIMARY KEY, checksum text NOT NULL)`); err != nil {
+		return fmt.Errorf("create schema_migrations: %w", err)
+	}
+
+	applied, err := appliedMigrations(ctx, conn)
+	if err != nil {
+		return err
+	}
+
+	known := make(map[int]migration, len(migs))
+	for _, m := range migs {
+		known[m.version] = m
+	}
+	for version := range applied {
+		if _, ok := known[version]; !ok {
+			return fmt.Errorf("database schema version %d is newer than this binary supports; refusing to start", version)
+		}
+	}
+
+	for _, m := range migs {
+		if sum, done := applied[m.version]; done {
+			if sum != m.checksum {
+				return fmt.Errorf("migration %04d_%s: checksum differs from the applied one; applied migrations must not be edited", m.version, m.name)
+			}
+			continue
+		}
+		if err := applyMigration(ctx, conn, m); err != nil {
+			return fmt.Errorf("migration %04d_%s: %w", m.version, m.name, err)
+		}
+	}
+	return nil
+}
+
+func appliedMigrations(ctx context.Context, conn *sql.Conn) (map[int]string, error) {
+	rows, err := conn.QueryContext(ctx, `SELECT version, checksum FROM schema_migrations`)
+	if err != nil {
+		return nil, fmt.Errorf("read schema_migrations: %w", err)
+	}
+	defer rows.Close()
+	applied := map[int]string{}
+	for rows.Next() {
+		var v int
+		var sum string
+		if err := rows.Scan(&v, &sum); err != nil {
+			return nil, err
+		}
+		applied[v] = sum
+	}
+	return applied, rows.Err()
+}
+
+func applyMigration(ctx context.Context, conn *sql.Conn, m migration) error {
+	tx, err := conn.BeginTx(ctx, nil)
 	if err != nil {
 		return err
 	}
 	defer func() { _ = tx.Rollback() }()
-	// Transaction-scoped lock is released on commit, rollback or connection loss.
-	if _, err = tx.ExecContext(ctx, `SELECT pg_advisory_xact_lock(762945038215)`); err != nil {
+
+	if _, err := tx.ExecContext(ctx, m.sql); err != nil {
 		return err
 	}
-	if _, err = tx.ExecContext(ctx, `CREATE TABLE IF NOT EXISTS schema_migrations (version integer PRIMARY KEY, checksum text NOT NULL)`); err != nil {
+	if _, err := tx.ExecContext(ctx,
+		`INSERT INTO schema_migrations (version, checksum) VALUES ($1, $2)`,
+		m.version, m.checksum); err != nil {
 		return err
-	}
-	var version int
-	var recorded string
-	err = tx.QueryRowContext(ctx, `SELECT version, checksum FROM schema_migrations ORDER BY version DESC LIMIT 1`).Scan(&version, &recorded)
-	switch {
-	case errors.Is(err, sql.ErrNoRows):
-		if _, err = tx.ExecContext(ctx, string(body)); err != nil {
-			return fmt.Errorf("apply schema: %w", err)
-		}
-		if _, err = tx.ExecContext(ctx, `INSERT INTO schema_migrations(version,checksum) VALUES(1,$1)`, checksum); err != nil {
-			return err
-		}
-	case err != nil:
-		return err
-	case version != 1 || recorded != checksum:
-		return fmt.Errorf("postgres: schema version or checksum differs; refusing to start")
 	}
 	return tx.Commit()
+}
+
+func loadMigrations(fsys fs.FS, dir string) ([]migration, error) {
+	entries, err := fs.ReadDir(fsys, dir)
+	if err != nil {
+		return nil, fmt.Errorf("read migrations: %w", err)
+	}
+	var out []migration
+	seen := map[int]string{}
+	for _, e := range entries {
+		if e.IsDir() || !strings.HasSuffix(e.Name(), ".sql") {
+			continue
+		}
+		prefix, name, ok := strings.Cut(strings.TrimSuffix(e.Name(), ".sql"), "_")
+		version, convErr := strconv.Atoi(prefix)
+		if !ok || convErr != nil || version <= 0 || name == "" {
+			return nil, fmt.Errorf("migration file %q must be named NNNN_description.sql", e.Name())
+		}
+		if prev, dup := seen[version]; dup {
+			return nil, fmt.Errorf("migration version %d is used by both %q and %q", version, prev, e.Name())
+		}
+		seen[version] = e.Name()
+		body, err := fs.ReadFile(fsys, path.Join(dir, e.Name()))
+		if err != nil {
+			return nil, fmt.Errorf("read migration %q: %w", e.Name(), err)
+		}
+		sum := sha256.Sum256(body)
+		out = append(out, migration{version: version, name: name, sql: string(body), checksum: hex.EncodeToString(sum[:])})
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].version < out[j].version })
+	return out, nil
 }
