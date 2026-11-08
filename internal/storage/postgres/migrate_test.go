@@ -321,3 +321,62 @@ func TestMigrateConcurrentOpensAreSerialized(t *testing.T) {
 		t.Fatalf("schema_migrations rows after concurrent opens = %d, want 1", n)
 	}
 }
+
+// TestMigrateRejectsChecksumMismatchBeforeApplyingPending asserts that when a
+// database records noncontiguous versions (say 1 and 3) and the binary also
+// introduces version 2 but carries a mismatched checksum for version 3, the
+// runner rejects the applied history *before* committing the pending migration
+// 2. The alternative order (apply 2 first, then discover the 3 mismatch) would
+// let Open modify the schema and then fail, leaving the database ahead of a
+// refused start.
+func TestMigrateRejectsChecksumMismatchBeforeApplyingPending(t *testing.T) {
+	dsn := isolatedDSN(t, testDSN(t))
+	ctx := context.Background()
+
+	fsys := fstest.MapFS{
+		"migrations/0001_a.sql": {Data: []byte(`CREATE TABLE t1 (x text)`)},
+		"migrations/0002_b.sql": {Data: []byte(`CREATE TABLE t2 (x text)`)},
+		"migrations/0003_c.sql": {Data: []byte(`CREATE TABLE t3 (x text)`)},
+	}
+
+	db, err := sql.Open("pgx", dsn)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = db.Close() })
+
+	// Seed a noncontiguous history by hand: versions 1 and 3 applied, version 2
+	// never applied. Only the 1 and 3 migration SQLs run; t2 is never created.
+	if _, err := db.Exec(`CREATE TABLE schema_migrations (version integer PRIMARY KEY, checksum text NOT NULL)`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec(`CREATE TABLE t1 (x text)`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec(`CREATE TABLE t3 (x text)`); err != nil {
+		t.Fatal(err)
+	}
+	// Record 1 with its real checksum and 3 with a tampered one, so the runner
+	// sees a checksum mismatch on an already-applied version while 2 is pending.
+	if _, err := db.Exec(`INSERT INTO schema_migrations (version, checksum) VALUES (1, $1)`, checksumOf([]byte(`CREATE TABLE t1 (x text)`))); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec(`INSERT INTO schema_migrations (version, checksum) VALUES (3, 'tampered')`); err != nil {
+		t.Fatal(err)
+	}
+
+	// The tampered 0003 is recorded and 0002 is pending. The runner must refuse
+	// the edited history before applying the pending migration.
+	if err := migrate(ctx, db, fsys, "migrations"); err == nil || !strings.Contains(err.Error(), "checksum") {
+		t.Fatalf("migrate = %v, want a checksum refusal before applying the pending migration", err)
+	}
+
+	// The pending migration 2 must NOT have been committed on the way out.
+	var n int
+	if err := db.QueryRow(`SELECT COUNT(*) FROM schema_migrations WHERE version = 2`).Scan(&n); err != nil {
+		t.Fatal(err)
+	}
+	if n != 0 {
+		t.Fatalf("version 2 was applied before the checksum mismatch was detected (rows=%d)", n)
+	}
+}

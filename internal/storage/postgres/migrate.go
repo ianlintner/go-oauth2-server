@@ -100,11 +100,19 @@ func migrate(ctx context.Context, db *sql.DB, fsys fs.FS, dir string) (err error
 		}
 	}
 
+	// Validate the entire applied history before applying anything new. A
+	// tampered checksum on an already-recorded version must abort the run
+	// before any pending migration commits, otherwise a noncontiguous history
+	// (e.g. 1 and 3 recorded, 2 pending) would let Open modify the schema and
+	// then reject the applied history afterwards.
+	for version, sum := range applied {
+		if m := known[version]; sum != m.checksum {
+			return fmt.Errorf("migration %04d_%s: checksum differs from the applied one; applied migrations must not be edited", m.version, m.name)
+		}
+	}
+
 	for _, m := range migs {
-		if sum, done := applied[m.version]; done {
-			if sum != m.checksum {
-				return fmt.Errorf("migration %04d_%s: checksum differs from the applied one; applied migrations must not be edited", m.version, m.name)
-			}
+		if _, done := applied[m.version]; done {
 			continue
 		}
 		if err := applyMigration(ctx, conn, m); err != nil {
