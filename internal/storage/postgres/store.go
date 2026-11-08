@@ -38,7 +38,7 @@ func Open(dsn string) (*Store, error) {
 		_ = db.Close()
 		return nil, fmt.Errorf("postgres: ping: %w", err)
 	}
-	if err = migrate(ctx, db); err != nil {
+	if err = migrate(ctx, db, migrations, "migrations"); err != nil {
 		_ = db.Close()
 		return nil, fmt.Errorf("postgres: migrate: %w", err)
 	}
