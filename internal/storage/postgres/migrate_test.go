@@ -139,8 +139,10 @@ func TestMigrateAppliesPendingInOrder(t *testing.T) {
 
 	fsys := fstest.MapFS{
 		"migrations/0001_a.sql": {Data: []byte(`CREATE TABLE t1 (x text)`)},
-		"migrations/0002_b.sql": {Data: []byte(`CREATE TABLE t2 (x text)`)},
-		"migrations/0003_c.sql": {Data: []byte(`CREATE TABLE t3 (x text)`)},
+		// Each later migration references its predecessor's table so an
+		// out-of-order run fails: 0002 inserts into t1, 0003 reads from t2.
+		"migrations/0002_b.sql": {Data: []byte(`CREATE TABLE t2 (x text); INSERT INTO t1 (x) VALUES ('from-0002');`)},
+		"migrations/0003_c.sql": {Data: []byte(`CREATE TABLE t3 (x text); INSERT INTO t2 (x) VALUES ('from-0003');`)},
 	}
 	db, err := sql.Open("pgx", dsn)
 	if err != nil {
@@ -190,7 +192,7 @@ func TestMigrateRollsBackAFailingMigration(t *testing.T) {
 
 	fsys := fstest.MapFS{
 		"migrations/0001_ok.sql":  {Data: []byte(`CREATE TABLE a (x text)`)},
-		"migrations/0002_bad.sql": {Data: []byte(`CREATE TABLE b (x text); THIS IS NOT SQL;`)},
+		"migrations/0002_bad.sql": {Data: []byte(`CREATE TABLE b (x text); SELECT 1/0;`)},
 	}
 	db, err := sql.Open("pgx", dsn)
 	if err != nil {

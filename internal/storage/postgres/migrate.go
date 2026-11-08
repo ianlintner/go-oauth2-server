@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"database/sql"
+	"database/sql/driver"
 	"embed"
 	"encoding/hex"
 	"fmt"
@@ -12,6 +13,9 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"time"
+
+	"github.com/jackc/pgx/v5/stdlib"
 )
 
 //go:embed migrations/*.sql
@@ -38,7 +42,7 @@ type migration struct {
 // earlier migration durable when a later one fails). The session lock is the
 // same advisory-lock key and forces contenders to line up before any of them
 // reads the applied set or applies a migration.
-func migrate(ctx context.Context, db *sql.DB, fsys fs.FS, dir string) error {
+func migrate(ctx context.Context, db *sql.DB, fsys fs.FS, dir string) (err error) {
 	migs, err := loadMigrations(fsys, dir)
 	if err != nil {
 		return err
@@ -54,8 +58,27 @@ func migrate(ctx context.Context, db *sql.DB, fsys fs.FS, dir string) error {
 		return err
 	}
 	defer func() {
-		// Reset context so an already-cancelled ctx cannot block the unlock.
-		_, _ = conn.ExecContext(context.Background(), `SELECT pg_advisory_unlock(762945038215)`)
+		// Bound the unlock so a hung or failed unlock cannot stall shutdown; if
+		// the caller's ctx was already cancelled it would make ExecContext fail
+		// immediately, so use a fresh bounded context for the unlock itself.
+		unlockCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		if _, unlockErr := conn.ExecContext(unlockCtx, `SELECT pg_advisory_unlock(762945038215)`); unlockErr != nil {
+			// The session may still hold the advisory lock. Returning it to the
+			// idle pool would let a locked session block every subsequent Open,
+			// so discard the underlying physical connection instead. Closing the
+			// *pgx.Conn and signalling driver.ErrBadConn makes database/sql drop
+			// rather than recycle the connection.
+			_ = conn.Raw(func(driverConn any) error {
+				if c, ok := driverConn.(*stdlib.Conn); ok {
+					return c.Conn().Close(context.Background())
+				}
+				return driver.ErrBadConn
+			})
+			if err == nil {
+				err = fmt.Errorf("release advisory lock: %w", unlockErr)
+			}
+		}
 	}()
 
 	if _, err := conn.ExecContext(ctx, `CREATE TABLE IF NOT EXISTS schema_migrations (version integer PRIMARY KEY, checksum text NOT NULL)`); err != nil {
