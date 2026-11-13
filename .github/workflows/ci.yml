@@ -67,7 +67,7 @@ jobs:
       # repo is checked out at the commit pinned in conformance-contract.yaml and
       # its published runner is exercised by a deterministic, SUT-free self-test,
       # then run against a locally started Go server for the core profile.
-      - uses: pnpm/action-setup@v4
+      - uses: pnpm/action-setup@v6
         with:
           version: 10.29.3
 
