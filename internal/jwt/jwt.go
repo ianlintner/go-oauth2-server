@@ -196,7 +196,7 @@ func NewVerifier(ks *KeySet, opts ...VerifierOption) *Verifier {
 
 // Verify implements oauth.Verifier.
 func (v *Verifier) Verify(_ context.Context, token string) (map[string]any, error) {
-	obj, err := jose.ParseSigned(token, []jose.SignatureAlgorithm{jose.RS256})
+	obj, err := jose.ParseSignedCompact(token, []jose.SignatureAlgorithm{jose.RS256})
 	if err != nil {
 		return nil, fmt.Errorf("jwt: parse: %w", err)
 	}
