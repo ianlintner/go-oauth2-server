@@ -1,0 +1,21 @@
+# gitleaks false positives — no real credentials in this repository.
+#
+# Every entry below matches a known-fake test/CI fixture that shares the same
+# intentionally-dummy 32-byte value `0123456789abcdef0123456789abcdef`
+# (a well-known, non-secret hex pattern) used to exercise session-secret and
+# signing-key handling without embedding a real credential.
+#
+# Format is `file:rule-id:line` (a full-history ignore: it matches that file,
+# rule id and line number in any commit, so it also covers older revisions of
+# the same fixture). See gitleaks `.gitleaksignore` docs.
+#
+# Added 2026-11-15 as part of Phase 1 security-tooling parity.
+
+# internal/session/session_test.go — `testKey` fixture value (fake).
+internal/session/session_test.go:generic-api-key:17
+
+# scripts/conformance-run.sh — `OAUTH2_SESSION_SECRET` CI-only dummy (fake).
+scripts/conformance-run.sh:generic-api-key:59
+
+# scripts/sut-smoke.sh — `OAUTH2_SESSION_SECRET` CI-only dummy (fake).
+scripts/sut-smoke.sh:generic-api-key:44
