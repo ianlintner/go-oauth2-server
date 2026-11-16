@@ -69,3 +69,37 @@ func TestMatchRedirectURI(t *testing.T) {
 		})
 	}
 }
+
+func TestMatchRedirectURIUppercaseHttpSchemeIsRefused(t *testing.T) {
+	if oauth.MatchRedirectURI([]string{"HTTP://client.example/cb"}, "HTTP://client.example/cb", false) {
+		t.Fatal("mixed-case http scheme on a non-loopback host must be refused")
+	}
+}
+
+func TestMatchRedirectURIRejectsDangerousSchemes(t *testing.T) {
+	for _, u := range []string{"javascript:alert(1)", "data:text/html,x", "file:///etc/passwd", "vbscript:x", "JavaScript:alert(1)", "https://client.example/cb ", "ftp://client.example/cb"} {
+		if oauth.MatchRedirectURI([]string{u}, u, false) {
+			t.Errorf("%q must be refused", u)
+		}
+		if oauth.MatchRedirectURI([]string{u}, u, true) {
+			t.Errorf("%q must be refused with insecure=true", u)
+		}
+	}
+}
+
+func TestMatchRedirectURIStillAcceptsPrivateUseAndHTTPSCases(t *testing.T) {
+	tests := []struct {
+		reg, req string
+		want     bool
+	}{
+		{"https://client.example/callback", "https://client.example/callback", true},
+		{"com.example.app:/oauth2redirect", "com.example.app:/oauth2redirect", true},
+		{"http://127.0.0.1/cb", "http://127.0.0.1:9999/cb", true},
+		{"http://client.example/cb", "http://client.example/cb", false},
+	}
+	for _, tc := range tests {
+		if got := oauth.MatchRedirectURI([]string{tc.reg}, tc.req, false); got != tc.want {
+			t.Errorf("MatchRedirectURI(%q, %q) = %v, want %v", tc.reg, tc.req, got, tc.want)
+		}
+	}
+}
