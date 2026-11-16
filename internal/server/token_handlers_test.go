@@ -97,7 +97,7 @@ func newTokenEnv(t *testing.T) *tokenEnv {
 // can exercise introspection and revocation against a persisted JWT.
 func (e *tokenEnv) issueAccessToken(t *testing.T, clientID, subject string) token.AccessToken {
 	t.Helper()
-	at, err := e.tokens.Issue(context.Background(), token.IssueParams{ClientID: clientID, Subject: subject, Scope: "read write"})
+	at, err := e.tokens.Issue(context.Background(), token.IssueParams{ClientID: clientID, Subject: subject, Scope: "read write", Audience: []string{issuer}})
 	if err != nil {
 		t.Fatal(err)
 	}

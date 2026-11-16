@@ -34,6 +34,7 @@ const (
 
 	// RFC 9126 §4 / OIDC Core §3.1.2.6 request_uri error.
 	CodeInvalidRequestURI Code = "invalid_request_uri"
+	CodeInvalidTarget     Code = "invalid_target"
 
 	// RFC 9449 §5 DPoP error for a missing or invalid proof.
 	CodeInvalidDPoPProof Code = "invalid_dpop_proof"
@@ -153,6 +154,11 @@ func ExpiredToken() *Error { return newError(CodeExpiredToken, "the device code 
 // InvalidRequestURI builds an invalid_request_uri error (RFC 9126 §4).
 func InvalidRequestURI(description string) *Error {
 	return newError(CodeInvalidRequestURI, description)
+}
+
+// InvalidTarget builds an RFC 8707 §2 invalid_target error.
+func InvalidTarget(description string) *Error {
+	return newError(CodeInvalidTarget, description)
 }
 
 // InvalidRedirectURI builds an RFC 7591 invalid_redirect_uri error.

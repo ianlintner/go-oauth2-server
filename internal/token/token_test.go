@@ -81,6 +81,7 @@ func issue(t *testing.T, svc *token.Service, clientID, subject, scope string) to
 		ClientID: clientID,
 		Subject:  subject,
 		Scope:    scope,
+		Audience: []string{testIssuer},
 	})
 	if err != nil {
 		t.Fatalf("issue: %v", err)

@@ -68,6 +68,11 @@ func introspectBody(info token.TokenInfo) map[string]any {
 		"iss":        info.Issuer,
 		"jti":        info.JTI,
 	}
+	if len(info.Audience) == 1 {
+		body["aud"] = info.Audience[0]
+	} else if len(info.Audience) > 1 {
+		body["aud"] = info.Audience
+	}
 	if info.ExpiresAt != 0 {
 		body["exp"] = info.ExpiresAt
 	}
