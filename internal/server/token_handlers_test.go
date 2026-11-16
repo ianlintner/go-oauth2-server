@@ -63,7 +63,10 @@ func newTokenEnv(t *testing.T) *tokenEnv {
 	if err != nil {
 		t.Fatal(err)
 	}
-	ks := jwt.NewKeySet(key)
+	ks, err := jwt.NewKeySet(key)
+	if err != nil {
+		t.Fatal(err)
+	}
 	signer := jwt.NewSigner(ks, jwt.WithType(token.AccessTokenType))
 	verifier := jwt.NewVerifier(ks, jwt.WithRequiredType(token.AccessTokenType))
 	tokens, err := token.New(token.Config{
