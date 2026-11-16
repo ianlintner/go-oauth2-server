@@ -46,19 +46,31 @@ it is RFC-safe. They are proposed here for owner review, not silently shipped.
    misbehaving client cannot ride a lower limit. A spent or denied code never
    answers `slow_down`.
 
-3. **User-code entry brute-force limit.** A signed-in user may fail at most
+3. **Verification page.** `GET /oauth/device/verify?user_code=…` (signed-in
+   users only) shows the requesting client's registered name (or, for a client
+   without one, its `client_id` marked as unnamed), the requested scope and the
+   code, and offers Approve and Deny. The lookup counts against the same
+   per-user failed-entry limit as a decision. The decision `POST` must carry
+   the `csrf_token` issued with that page — bound to the session cookie and to
+   that user code, valid for 15 minutes — and an `action` of exactly `approve`
+   or `deny`; a missing token is `403`, a missing or other `action` is
+   `invalid_request`. `Sec-Fetch-Site` is still checked but only as an extra
+   layer. The contract runner drives the JSON endpoints and does not render
+   this page, so these rules are covered by unit tests only.
+
+4. **User-code entry brute-force limit.** A signed-in user may fail at most
    5 entries per 5 minutes (returning 429), inside `authcode` only. The count
    is a single atomic check-and-record, so concurrent guesses cannot overshoot
    the cap, and a successful entry does not count against it. RFC 8628 §5.2
    requires the endpoint be designed to limit brute-force attempts.
 
-4. **Pushed request lifetime.** `request_uri` is single-use (RFC 9126 §2.2)
+5. **Pushed request lifetime.** `request_uri` is single-use (RFC 9126 §2.2)
    and expires after **60 seconds** — a policy choice; the RFC leaves TTL to
    the AS. `request_uri` is 256-bit random under
    `urn:ietf:params:oauth:request_uri:`; client-bound; resolved only to the
    pushing client.
 
-5. **Dynamic registration policy.** Open registration (no initial access
+6. **Dynamic registration policy.** Open registration (no initial access
    token), gated: **refused in production**, implied in conformance mode, and
    opt-in otherwise via `OAUTH2_DYNAMIC_REGISTRATION=1`. A registered client:
    - may hold only `authorization_code`, `refresh_token` and the device grant

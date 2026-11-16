@@ -3,9 +3,11 @@ package server_test
 import (
 	"context"
 	"encoding/json"
+	"html"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"regexp"
 	"strings"
 	"testing"
 	"time"
@@ -47,7 +49,7 @@ func newExtEnvMode(t *testing.T, registration, conformance bool) *handlerEnv {
 		return h
 	}
 	for _, c := range []oauth.Client{
-		{ID: "client-dev", SecretHash: hash(devPass), AuthMethod: "client_secret_basic", RedirectURIs: []string{callback}, Scopes: []string{"read"}, GrantTypes: []string{devGrant}},
+		{ID: "client-dev", Name: "Living Room TV", SecretHash: hash(devPass), AuthMethod: "client_secret_basic", RedirectURIs: []string{callback}, Scopes: []string{"read"}, GrantTypes: []string{devGrant}},
 		{ID: "client-a", SecretHash: hash(parPass), AuthMethod: "client_secret_basic", RedirectURIs: []string{callback}, Scopes: []string{"read"}, GrantTypes: []string{"authorization_code"}},
 		{ID: "client-enc", SecretHash: hash("other-secret"), AuthMethod: "client_secret_basic", RedirectURIs: []string{callback}, Scopes: []string{"read"}, GrantTypes: []string{"authorization_code"}},
 	} {
@@ -71,7 +73,7 @@ func newExtEnvMode(t *testing.T, registration, conformance bool) *handlerEnv {
 		Service: svc, Sessions: sess, Issuer: issuer, Conformance: conformance,
 		RegistrationEnabled: registration, RegistrationScopes: []string{"openid", "read"},
 	})
-	return &handlerEnv{h: h, store: st, clock: clk}
+	return &handlerEnv{h: h, store: st, clock: clk, sess: sess}
 }
 
 func (e *handlerEnv) postJSON(target, body string, opts ...reqOpt) *httptest.ResponseRecorder {
@@ -113,6 +115,31 @@ func startDeviceHTTP(t *testing.T, e *handlerEnv) map[string]any {
 	return decode(t, rec)
 }
 
+var csrfField = regexp.MustCompile(`name="csrf_token" value="([^"]*)"`)
+
+// deviceForm fetches the verification page for code as the cookie's session
+// and returns the anti-forgery value the page embeds.
+func deviceForm(t *testing.T, e *handlerEnv, c, code string) string {
+	t.Helper()
+	rec := e.get("/oauth/device/verify?user_code="+url.QueryEscape(code), cookie(c))
+	if rec.Code != 200 {
+		t.Fatalf("verify page = %d %s", rec.Code, rec.Body.String())
+	}
+	m := csrfField.FindStringSubmatch(rec.Body.String())
+	if m == nil {
+		t.Fatalf("page has no form token: %s", rec.Body.String())
+	}
+	return html.UnescapeString(m[1])
+}
+
+func decideBody(code, action, token string) string {
+	v := url.Values{"user_code": {code}, "csrf_token": {token}}
+	if action != "" {
+		v.Set("action", action)
+	}
+	return v.Encode()
+}
+
 func pollHTTP(e *handlerEnv, dc string) *httptest.ResponseRecorder {
 	return e.postForm("/oauth/token", url.Values{"grant_type": {devGrant}, "device_code": {dc}, "client_id": {"client-dev"}}.Encode(), basic("client-dev", devPass))
 }
@@ -135,7 +162,8 @@ func TestDeviceHTTPFullFlow(t *testing.T) {
 	wantErrBody(t, pollHTTP(e, dc), 400, "authorization_pending")
 
 	c := e.login(t)
-	rec := e.postForm("/oauth/device/verify", url.Values{"user_code": {d["user_code"].(string)}, "action": {"approve"}}.Encode(), cookie(c))
+	uc := d["user_code"].(string)
+	rec := e.postForm("/oauth/device/verify", decideBody(uc, "approve", deviceForm(t, e, c, uc)), cookie(c))
 	if rec.Code != 200 {
 		t.Fatalf("verify = %d %s", rec.Code, rec.Body.String())
 	}
@@ -157,7 +185,9 @@ func TestDeviceHTTPFullFlow(t *testing.T) {
 func TestDeviceHTTPDeniedIs400(t *testing.T) {
 	e := newExtEnv(t, false)
 	d := startDeviceHTTP(t, e)
-	rec := e.postForm("/oauth/device/verify", url.Values{"user_code": {d["user_code"].(string)}, "action": {"deny"}}.Encode(), cookie(e.login(t)))
+	c := e.login(t)
+	uc := d["user_code"].(string)
+	rec := e.postForm("/oauth/device/verify", decideBody(uc, "deny", deviceForm(t, e, c, uc)), cookie(c))
 	if rec.Code != 200 {
 		t.Fatalf("verify = %d", rec.Code)
 	}
@@ -238,20 +268,118 @@ func TestDeviceVerifyRefusesCrossSiteAndBadAction(t *testing.T) {
 	e := newExtEnv(t, false)
 	d := startDeviceHTTP(t, e)
 	c := e.login(t)
-	body := url.Values{"user_code": {d["user_code"].(string)}, "action": {"approve"}}.Encode()
-	if rec := e.postForm("/oauth/device/verify", body, cookie(c), header("Sec-Fetch-Site", "cross-site")); rec.Code != 403 {
+	uc := d["user_code"].(string)
+	tok := deviceForm(t, e, c, uc)
+	if rec := e.postForm("/oauth/device/verify", decideBody(uc, "approve", tok), cookie(c), header("Sec-Fetch-Site", "cross-site")); rec.Code != 403 {
 		t.Fatalf("cross-site verify = %d, want 403", rec.Code)
 	}
-	bad := url.Values{"user_code": {d["user_code"].(string)}, "action": {"maybe"}}.Encode()
-	wantErrBody(t, e.postForm("/oauth/device/verify", bad, cookie(c)), 400, "invalid_request")
+	wantErrBody(t, e.postForm("/oauth/device/verify", decideBody(uc, "maybe", tok), cookie(c)), 400, "invalid_request")
 	// Neither attempt decided anything.
 	e.clock.t = e.clock.t.Add(6 * time.Second)
 	wantErrBody(t, pollHTTP(e, d["device_code"].(string)), 400, "authorization_pending")
 }
 
+func TestDeviceVerifyWithoutActionDoesNotApprove(t *testing.T) {
+	e := newExtEnv(t, false)
+	d := startDeviceHTTP(t, e)
+	c := e.login(t)
+	uc := d["user_code"].(string)
+	rec := e.postForm("/oauth/device/verify", decideBody(uc, "", deviceForm(t, e, c, uc)), cookie(c))
+	wantErrBody(t, rec, 400, "invalid_request")
+	e.clock.t = e.clock.t.Add(6 * time.Second)
+	wantErrBody(t, pollHTTP(e, d["device_code"].(string)), 400, "authorization_pending")
+}
+
+func TestDeviceVerifyRejectsMissingForgeryToken(t *testing.T) {
+	e := newExtEnv(t, false)
+	d := startDeviceHTTP(t, e)
+	c := e.login(t)
+	uc := d["user_code"].(string)
+	other := startDeviceHTTP(t, e)["user_code"].(string)
+	for name, body := range map[string]string{
+		"absent":           decideBody(uc, "approve", ""),
+		"garbage":          decideBody(uc, "approve", "a.b.c"),
+		"other code token": decideBody(uc, "approve", deviceForm(t, e, c, other)),
+	} {
+		if rec := e.postForm("/oauth/device/verify", body, cookie(c)); rec.Code != 403 {
+			t.Fatalf("%s: status = %d, want 403", name, rec.Code)
+		}
+	}
+	// A token minted for another session is refused too.
+	e2 := e.login2(t)
+	if rec := e.postForm("/oauth/device/verify", decideBody(uc, "approve", deviceForm(t, e, e2, uc)), cookie(c)); rec.Code != 403 {
+		t.Fatalf("foreign-session token: status = %d, want 403", rec.Code)
+	}
+	e.clock.t = e.clock.t.Add(6 * time.Second)
+	wantErrBody(t, pollHTTP(e, d["device_code"].(string)), 400, "authorization_pending")
+}
+
+func TestDeviceVerifyTokenExpires(t *testing.T) {
+	e := newExtEnv(t, false)
+	d := startDeviceHTTP(t, e)
+	c := e.login(t)
+	uc := d["user_code"].(string)
+	tok := deviceForm(t, e, c, uc)
+	e.clock.t = e.clock.t.Add(session.FormTokenTTL + time.Second)
+	if rec := e.postForm("/oauth/device/verify", decideBody(uc, "approve", tok), cookie(c)); rec.Code != 403 {
+		t.Fatalf("expired token: status = %d, want 403", rec.Code)
+	}
+}
+
+func TestDeviceVerifyPageShowsClientAndScope(t *testing.T) {
+	e := newExtEnv(t, false)
+	d := startDeviceHTTP(t, e)
+	uc := d["user_code"].(string)
+	c1 := e.login(t)
+	rec := e.get("/oauth/device/verify?user_code="+url.QueryEscape(uc), cookie(c1))
+	body := rec.Body.String()
+	if rec.Code != 200 || !strings.Contains(body, "Living Room TV") || !strings.Contains(body, "read") {
+		t.Fatalf("page = %d %s", rec.Code, body)
+	}
+	t1 := deviceForm(t, e, c1, uc)
+	e.clock.t = e.clock.t.Add(time.Second)
+	t2 := deviceForm(t, e, e.login2(t), uc)
+	if t1 == "" || t1 == t2 {
+		t.Fatalf("form tokens must differ between sessions: %q %q", t1, t2)
+	}
+}
+
+func TestDeviceVerifyPageUnknownCodeAndNoSession(t *testing.T) {
+	e := newExtEnv(t, false)
+	c := e.login(t)
+	wantErrBody(t, e.get("/oauth/device/verify?user_code=BCDF-GHJK", cookie(c)), 400, "invalid_request")
+	if rec := e.get("/oauth/device/verify?user_code=BCDF-GHJK"); rec.Code != 302 {
+		t.Fatalf("anonymous = %d, want 302", rec.Code)
+	}
+}
+
+func TestDeviceVerifyAnsweredRequestShowsNoForm(t *testing.T) {
+	e := newExtEnv(t, false)
+	d := startDeviceHTTP(t, e)
+	c := e.login(t)
+	uc := d["user_code"].(string)
+	tok := deviceForm(t, e, c, uc)
+	if rec := e.postForm("/oauth/device/verify", decideBody(uc, "approve", tok), cookie(c)); rec.Code != 200 {
+		t.Fatalf("approve = %d", rec.Code)
+	}
+	// Replaying the same submission cannot decide again.
+	wantErrBody(t, e.postForm("/oauth/device/verify", decideBody(uc, "deny", tok), cookie(c)), 400, "invalid_request")
+	rec := e.get("/oauth/device/verify?user_code="+url.QueryEscape(uc), cookie(c))
+	if strings.Contains(rec.Body.String(), "csrf_token") {
+		t.Fatalf("answered request still offers a decision form: %s", rec.Body.String())
+	}
+}
+
 func TestDeviceVerifyUnknownCodeIsRejected(t *testing.T) {
 	e := newExtEnv(t, false)
-	rec := e.postForm("/oauth/device/verify", "user_code=BCDF-GHJK&action=approve", cookie(e.login(t)))
+	c := e.login(t)
+	req := httptest.NewRequest(http.MethodGet, "/", nil)
+	req.Header.Set("Cookie", c)
+	tok, ok := e.sess.FormToken(req, "device:BCDFGHJK")
+	if !ok {
+		t.Fatal("no token")
+	}
+	rec := e.postForm("/oauth/device/verify", decideBody("BCDF-GHJK", "approve", tok), cookie(c))
 	wantErrBody(t, rec, 400, "invalid_request")
 }
 
@@ -492,4 +620,11 @@ func TestRegistrationHTTPBodyIsBounded(t *testing.T) {
 	e := newExtEnv(t, true)
 	huge := `{"redirect_uris":["https://x.example/cb"],"client_name":"` + strings.Repeat("a", 200_000) + `"}`
 	wantErrBody(t, e.postJSON("/connect/register", huge), 400, "invalid_client_metadata")
+}
+
+// login2 signs in again one second later, yielding a distinct session cookie.
+func (e *handlerEnv) login2(t *testing.T) string {
+	t.Helper()
+	e.clock.t = e.clock.t.Add(time.Second)
+	return e.login(t)
 }

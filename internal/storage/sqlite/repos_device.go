@@ -49,6 +49,16 @@ func (r *deviceRepo) GetByHash(ctx context.Context, hash string) (oauth.DeviceCo
 	return d, err
 }
 
+// GetByUserCodeHash is the read-only lookup the verification page uses.
+func (r *deviceRepo) GetByUserCodeHash(ctx context.Context, userCodeHash string) (oauth.DeviceCode, error) {
+	d, err := scanDevice(r.db.QueryRowContext(ctx,
+		`SELECT `+deviceCols+` FROM device_codes WHERE user_code_hash = ?`, userCodeHash))
+	if errors.Is(err, sql.ErrNoRows) {
+		return oauth.DeviceCode{}, oauth.ErrNotFound
+	}
+	return d, err
+}
+
 // Decide is one conditional UPDATE: only a pending, unconsumed authorization
 // can be decided, and exactly one concurrent caller wins.
 func (r *deviceRepo) Decide(ctx context.Context, userCodeHash, status, userID string) (oauth.DeviceCode, error) {

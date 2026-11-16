@@ -182,6 +182,39 @@ func normalizeUserCode(in string) (string, bool) {
 	return in, true
 }
 
+// DescribeDevice looks up the live authorization for userCode so the
+// verification page can show who is asking and for what. It is read-only but
+// counts against the same per-user failure window as DecideDevice: a lookup
+// that finds a live authorization is released, an unknown or expired one is
+// not.
+func (s *Service) DescribeDevice(ctx context.Context, user oauth.User, userCode string) (oauth.DeviceCode, oauth.Client, error) {
+	now := s.clock.Now()
+	if !s.failures.reserve(user.ID, now) {
+		return oauth.DeviceCode{}, oauth.Client{}, oauth.InvalidRequest("too many failed attempts; try again later").WithStatus(429)
+	}
+	bad := oauth.InvalidRequest("the code is unknown, expired or already used")
+	norm, ok := normalizeUserCode(userCode)
+	if !ok {
+		return oauth.DeviceCode{}, oauth.Client{}, bad
+	}
+	rec, err := s.store.DeviceCodes().GetByUserCodeHash(ctx, hashCode(norm))
+	switch {
+	case errors.Is(err, oauth.ErrNotFound):
+		return oauth.DeviceCode{}, oauth.Client{}, bad
+	case err != nil:
+		return oauth.DeviceCode{}, oauth.Client{}, oauth.ServerError(err)
+	}
+	if rec.Consumed || !now.Before(rec.ExpiresAt) {
+		return oauth.DeviceCode{}, oauth.Client{}, bad
+	}
+	client, err := s.store.Clients().Get(ctx, rec.ClientID)
+	if err != nil {
+		return oauth.DeviceCode{}, oauth.Client{}, oauth.ServerError(err)
+	}
+	s.failures.release(user.ID)
+	return rec, client, nil
+}
+
 // DecideDevice records the signed-in user's decision on the authorization
 // identified by userCode. Failed entries count against the user's limit; the
 // count is reserved up front (check-and-record) so concurrent guesses cannot

@@ -97,3 +97,39 @@ func TestDeviceSlowDownIntervalIsCapped(t *testing.T) {
 		t.Fatalf("interval = %d, want capped at 60", rec.Interval)
 	}
 }
+
+func TestDeviceDescribeCountsAgainstTheGuessLimiter(t *testing.T) {
+	e := newEnv(t)
+	addDeviceClients(t, e)
+	d := startDevice(t, e)
+	ctx := context.Background()
+	for i := 0; i < 5; i++ {
+		if _, _, err := e.svc.DescribeDevice(ctx, e.user, "BCDF-GHJK"); err == nil {
+			t.Fatalf("guess %d unexpectedly described an authorization", i)
+		}
+	}
+	err := e.svc.DecideDevice(ctx, e.user, d.UserCode, true)
+	var oe *oauth.Error
+	if !errors.As(err, &oe) || oe.HTTPStatus() != 429 {
+		t.Fatalf("correct code after exhausted window = %v, want 429", err)
+	}
+	if _, _, err := e.svc.DescribeDevice(ctx, e.user, d.UserCode); err == nil {
+		t.Fatal("describe must be refused once the window is exhausted")
+	}
+}
+
+func TestDeviceDescribeReturnsClientAndScopeWithoutCounting(t *testing.T) {
+	e := newEnv(t)
+	addDeviceClients(t, e)
+	d := startDevice(t, e)
+	ctx := context.Background()
+	for i := 0; i < 8; i++ {
+		rec, c, err := e.svc.DescribeDevice(ctx, e.user, d.UserCode)
+		if err != nil {
+			t.Fatalf("describe %d: %v", i, err)
+		}
+		if c.ID != "client-dev" || rec.Scope != "read" || rec.Status != oauth.DevicePending {
+			t.Fatalf("describe = %+v %+v", rec, c)
+		}
+	}
+}
