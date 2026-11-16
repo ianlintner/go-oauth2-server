@@ -70,6 +70,15 @@ type Config struct {
 	// default, implied by conformance mode, and refused in production until
 	// an initial-access-token policy is approved.
 	DynamicRegistration bool
+
+	// MaxConcurrentHashes bounds concurrent password-hash computations per
+	// process (OAUTH2_MAX_CONCURRENT_HASHES). 0 selects the default (one per
+	// CPU); a negative value disables the bound.
+	MaxConcurrentHashes int
+	// AuthFailureLimit is the per-identifier failed-authentication budget per
+	// minute (OAUTH2_AUTH_FAILURES_PER_MINUTE). 0 selects the default (10); a
+	// negative value disables it. Both are per process.
+	AuthFailureLimit int
 }
 
 // Load reads configuration through getenv (os.Getenv when nil) and validates
@@ -137,6 +146,19 @@ func Load(getenv func(string) string) (Config, error) {
 	}
 	if cfg.MetricsEnabled, err = boolEnv(get("OAUTH2_METRICS_ENABLED"), false); err != nil {
 		fail("OAUTH2_METRICS_ENABLED %v", err)
+	}
+
+	// Throttling. Test-mode conformance runs hammer endpoints from one
+	// source, so they default to unthrottled unless a value is set.
+	limitDefault := 0
+	if get("OAUTH2_CONFORMANCE_MODE") == "1" {
+		limitDefault = -1
+	}
+	if cfg.MaxConcurrentHashes, err = intEnv(get("OAUTH2_MAX_CONCURRENT_HASHES"), limitDefault); err != nil {
+		fail("OAUTH2_MAX_CONCURRENT_HASHES %v", err)
+	}
+	if cfg.AuthFailureLimit, err = intEnv(get("OAUTH2_AUTH_FAILURES_PER_MINUTE"), limitDefault); err != nil {
+		fail("OAUTH2_AUTH_FAILURES_PER_MINUTE %v", err)
 	}
 
 	// Conformance mode is a strict "1": no truthy synonyms enable test-mode
@@ -239,6 +261,18 @@ func validateKeyFile(path string) error {
 		return errors.New("is empty")
 	}
 	return nil
+}
+
+// intEnv parses an optional integer, returning fallback when raw is empty.
+func intEnv(raw string, fallback int) (int, error) {
+	if raw == "" {
+		return fallback, nil
+	}
+	v, err := strconv.Atoi(raw)
+	if err != nil {
+		return 0, fmt.Errorf("must be an integer (got %q)", raw)
+	}
+	return v, nil
 }
 
 func boolEnv(raw string, fallback bool) (bool, error) {

@@ -141,6 +141,8 @@ func Run(ctx context.Context, opts Options) error {
 		Random:                 rnd,
 		AllowInsecureRedirects: cfg.AllowInsecureRedirects,
 		Tokens:                 tokens,
+		MaxConcurrentHashes:    cfg.MaxConcurrentHashes,
+		AuthFailureLimit:       cfg.AuthFailureLimit,
 	})
 	if err != nil {
 		closeListener()
