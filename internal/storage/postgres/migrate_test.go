@@ -79,8 +79,8 @@ func TestMigrateFreshAppliesEmbeddedAndIsIdempotent(t *testing.T) {
 	if err := db.QueryRow(`SELECT COUNT(*) FROM schema_migrations`).Scan(&n); err != nil {
 		t.Fatal(err)
 	}
-	if n != 1 {
-		t.Fatalf("schema_migrations rows = %d, want 1 (re-open must not re-apply)", n)
+	if want := embeddedMigrationCount(t); n != want {
+		t.Fatalf("schema_migrations rows = %d, want %d (re-open must not re-apply)", n, want)
 	}
 }
 
@@ -317,9 +317,20 @@ func TestMigrateConcurrentOpensAreSerialized(t *testing.T) {
 	if err := db.QueryRow(`SELECT COUNT(*) FROM schema_migrations`).Scan(&n); err != nil {
 		t.Fatal(err)
 	}
-	if n != 1 {
-		t.Fatalf("schema_migrations rows after concurrent opens = %d, want 1", n)
+	if want := embeddedMigrationCount(t); n != want {
+		t.Fatalf("schema_migrations rows after concurrent opens = %d, want %d", n, want)
 	}
+}
+
+// embeddedMigrationCount returns the number of embedded migration files, so
+// idempotency assertions do not hardcode the current schema version.
+func embeddedMigrationCount(t *testing.T) int {
+	t.Helper()
+	ms, err := loadMigrations(migrations, "migrations")
+	if err != nil {
+		t.Fatal(err)
+	}
+	return len(ms)
 }
 
 // TestMigrateRejectsChecksumMismatchBeforeApplyingPending asserts that when a
