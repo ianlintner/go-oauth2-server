@@ -44,7 +44,11 @@ func newKeySet(t *testing.T) *jwt.KeySet {
 	if err != nil {
 		t.Fatalf("generate key: %v", err)
 	}
-	return jwt.NewKeySet(key)
+	ks, err := jwt.NewKeySet(key)
+	if err != nil {
+		t.Fatalf("key set: %v", err)
+	}
+	return ks
 }
 
 func newStore(t *testing.T) oauth.Store {

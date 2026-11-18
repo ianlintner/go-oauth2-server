@@ -164,25 +164,23 @@ func Run(ctx context.Context, opts Options) error {
 	if cfg.MetricsEnabled {
 		metrics = observability.New()
 	}
-	srv := &http.Server{
-		Handler: observability.Trace(log, server.New(server.Deps{
-			Metrics:     metrics,
-			Ping:        st.Ping,
-			Conformance: cfg.ConformanceMode,
-			Service:     svc,
-			Sessions:    sessions,
-			Issuer:      cfg.Issuer,
-			Tokens:      tokens,
-			Logger:      log,
-			// DPoP replay state is per process and lost on restart; see
-			// docs/sender-constrained.md for the accepted limits.
-			DPoP: dpop.NewVerifier(dpop.Config{Clock: oauth.SystemClock{}, Replay: dpop.NewMemoryReplayStore(oauth.SystemClock{}, dpopReplayCapacity)}),
+	handler := observability.Trace(log, server.New(server.Deps{
+		Metrics:     metrics,
+		Ping:        st.Ping,
+		Conformance: cfg.ConformanceMode,
+		Service:     svc,
+		Sessions:    sessions,
+		Issuer:      cfg.Issuer,
+		Tokens:      tokens,
+		Logger:      log,
+		// DPoP replay state is per process and lost on restart; see
+		// docs/sender-constrained.md for the accepted limits.
+		DPoP: dpop.NewVerifier(dpop.Config{Clock: oauth.SystemClock{}, Replay: dpop.NewMemoryReplayStore(oauth.SystemClock{}, dpopReplayCapacity)}),
 
-			RegistrationEnabled: cfg.DynamicRegistration,
-			RegistrationScopes:  []string{"openid", "read"},
-		})),
-		ReadHeaderTimeout: 5 * time.Second,
-	}
+		RegistrationEnabled: cfg.DynamicRegistration,
+		RegistrationScopes:  []string{"openid", "read"},
+	}))
+	srv := newServer(handler, cfg)
 
 	serveErr := make(chan error, 1)
 	go func() {
@@ -207,6 +205,22 @@ func Run(ctx context.Context, opts Options) error {
 			return fmt.Errorf("graceful shutdown: %w", err)
 		}
 		return <-serveErr
+	}
+}
+
+// readHeaderTimeout bounds how long a client may take to send request headers.
+const readHeaderTimeout = 5 * time.Second
+
+// newServer builds the HTTP server with bounded read, write and idle times and
+// a bounded header size, taken from cfg.
+func newServer(handler http.Handler, cfg config.Config) *http.Server {
+	return &http.Server{
+		Handler:           handler,
+		ReadHeaderTimeout: readHeaderTimeout,
+		ReadTimeout:       cfg.ReadTimeout,
+		WriteTimeout:      cfg.WriteTimeout,
+		IdleTimeout:       cfg.IdleTimeout,
+		MaxHeaderBytes:    cfg.MaxHeaderBytes,
 	}
 }
 

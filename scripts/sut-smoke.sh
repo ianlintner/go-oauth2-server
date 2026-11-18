@@ -40,6 +40,7 @@ users:
     password: test-only-password
 YAML
 
+export OAUTH2_ENVIRONMENT=development
 export OAUTH2_ISSUER="http://localhost:$port"
 export OAUTH2_SIGNING_KEY_FILE="$work/signing.key"
 export OAUTH2_SESSION_SECRET=0123456789abcdef0123456789abcdef
