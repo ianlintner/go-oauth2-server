@@ -16,7 +16,7 @@ func TestSignVerifyRoundTrip(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	ks := NewKeySet(key)
+	ks := mustKeySet(t, key)
 	s := NewSigner(ks, WithType("at+jwt"))
 	v := NewVerifier(ks)
 
@@ -44,8 +44,8 @@ func TestSignVerifyRoundTrip(t *testing.T) {
 func TestVerifyWrongKeyFails(t *testing.T) {
 	keyA, _ := rsa.GenerateKey(rand.Reader, 2048)
 	keyB, _ := rsa.GenerateKey(rand.Reader, 2048)
-	s := NewSigner(NewKeySet(keyA))
-	v := NewVerifier(NewKeySet(keyB))
+	s := NewSigner(mustKeySet(t, keyA))
+	v := NewVerifier(mustKeySet(t, keyB))
 
 	token, err := s.Sign(context.Background(), map[string]any{"iss": "http://a"})
 	if err != nil {
@@ -58,7 +58,7 @@ func TestVerifyWrongKeyFails(t *testing.T) {
 
 func TestKeySetJWKS(t *testing.T) {
 	key, _ := rsa.GenerateKey(rand.Reader, 2048)
-	ks := NewKeySet(key)
+	ks := mustKeySet(t, key)
 	jwks := ks.JWKS()
 	if len(jwks.Keys) != 1 {
 		t.Fatalf("expected 1 key, got %d", len(jwks.Keys))
@@ -116,6 +116,45 @@ func TestPrepareKeySetRejectsMangledKeyEvenInNonProduction(t *testing.T) {
 	}
 	if _, err := PrepareKeySet(path, false); err == nil {
 		t.Fatal("expected a mangled non-placeholder key to be rejected, not silently regenerated")
+	}
+}
+
+func mustKeySet(t *testing.T, key *rsa.PrivateKey) *KeySet {
+	t.Helper()
+	ks, err := NewKeySet(key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return ks
+}
+
+func TestPrepareKeySetRejectsWeakRSAKey(t *testing.T) {
+	key, err := rsa.GenerateKey(rand.Reader, 1024)
+	if err != nil {
+		t.Skipf("crypto/rsa refuses to generate a 1024-bit key: %v", err)
+	}
+	path := filepath.Join(t.TempDir(), "signing.key")
+	if err := os.WriteFile(path, marshalRSAPrivateKeyPEM(t, key), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	for _, production := range []bool{true, false} {
+		_, err = PrepareKeySet(path, production)
+		if err == nil || !strings.Contains(err.Error(), "1024 bits") {
+			t.Fatalf("PrepareKeySet(production=%v) error = %v, want one naming the 1024-bit modulus", production, err)
+		}
+	}
+}
+
+func TestNewKeySetRejectsWeakKey(t *testing.T) {
+	key, err := rsa.GenerateKey(rand.Reader, 1024)
+	if err != nil {
+		t.Skipf("crypto/rsa refuses to generate a 1024-bit key: %v", err)
+	}
+	if _, err := NewKeySet(key); err == nil || !strings.Contains(err.Error(), "1024 bits") {
+		t.Fatalf("NewKeySet error = %v, want one naming the 1024-bit modulus", err)
+	}
+	if _, err := NewKeySet(nil); err == nil {
+		t.Fatal("NewKeySet(nil) succeeded")
 	}
 }
 
