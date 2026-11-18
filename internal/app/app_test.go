@@ -39,6 +39,7 @@ func devEnv(t *testing.T) map[string]string {
 		t.Fatal(err)
 	}
 	return map[string]string{
+		"OAUTH2_ENVIRONMENT":      "development",
 		"OAUTH2_ISSUER":           "http://localhost:8080",
 		"OAUTH2_SIGNING_KEY_FILE": key,
 		"OAUTH2_SESSION_SECRET":   "0123456789abcdef0123456789abcdef",
