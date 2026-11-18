@@ -6,8 +6,10 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/ianlintner/go-oauth2-server/internal/config"
 )
@@ -28,6 +30,7 @@ func baseEnv(t *testing.T) map[string]string {
 		t.Fatal(err)
 	}
 	return map[string]string{
+		"OAUTH2_ENVIRONMENT":      "development",
 		"OAUTH2_ISSUER":           "http://localhost:8080",
 		"OAUTH2_SIGNING_KEY_FILE": key,
 		"OAUTH2_SESSION_SECRET":   goodSession,
@@ -247,6 +250,84 @@ func TestSecretsAreRedacted(t *testing.T) {
 	}
 	if string(cfg.SessionSecret) != goodSession {
 		t.Fatal("Reveal path broke: the secret value itself must stay intact")
+	}
+}
+
+func TestUnsetEnvironmentFailsClosedLikeProduction(t *testing.T) {
+	m := baseEnv(t)
+	delete(m, "OAUTH2_ENVIRONMENT")
+	_, err := config.Load(env(m))
+	if err == nil || !strings.Contains(err.Error(), "OAUTH2_ISSUER") {
+		t.Fatalf("err = %v, want an OAUTH2_ISSUER complaint for an unset environment with an http issuer", err)
+	}
+	m["OAUTH2_ENVIRONMENT"] = "development"
+	if _, err := config.Load(env(m)); err != nil {
+		t.Fatalf("explicit development: %v", err)
+	}
+}
+
+func TestKeyFileMustNotBeGroupOrWorldReadable(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("POSIX permission bits are not meaningful on Windows")
+	}
+	for _, mode := range []os.FileMode{0o644, 0o640, 0o604, 0o666, 0o620} {
+		m := baseEnv(t)
+		if err := os.Chmod(m["OAUTH2_SIGNING_KEY_FILE"], mode); err != nil {
+			t.Fatal(err)
+		}
+		_, err := config.Load(env(m))
+		if err == nil || !strings.Contains(err.Error(), "OAUTH2_SIGNING_KEY_FILE") {
+			t.Errorf("mode %#o: err = %v, want an OAUTH2_SIGNING_KEY_FILE complaint", mode, err)
+		}
+	}
+	for _, mode := range []os.FileMode{0o600, 0o400} {
+		m := baseEnv(t)
+		if err := os.Chmod(m["OAUTH2_SIGNING_KEY_FILE"], mode); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := config.Load(env(m)); err != nil {
+			t.Errorf("mode %#o: %v", mode, err)
+		}
+	}
+}
+
+func TestServerLimitDefaultsAndOverrides(t *testing.T) {
+	cfg, err := config.Load(env(baseEnv(t)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.ReadTimeout <= 0 || cfg.WriteTimeout <= 0 || cfg.IdleTimeout <= 0 || cfg.MaxHeaderBytes <= 0 {
+		t.Fatalf("limits must default to positive values: %+v", cfg)
+	}
+	m := baseEnv(t)
+	m["OAUTH2_READ_TIMEOUT"] = "45s"
+	m["OAUTH2_WRITE_TIMEOUT"] = "2m"
+	m["OAUTH2_IDLE_TIMEOUT"] = "90s"
+	m["OAUTH2_MAX_HEADER_BYTES"] = "8192"
+	cfg, err = config.Load(env(m))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.ReadTimeout != 45*time.Second || cfg.WriteTimeout != 2*time.Minute || cfg.IdleTimeout != 90*time.Second || cfg.MaxHeaderBytes != 8192 {
+		t.Fatalf("overrides not applied: %+v", cfg)
+	}
+}
+
+func TestServerLimitsRejectInvalidValues(t *testing.T) {
+	for _, tc := range []struct{ key, val string }{
+		{"OAUTH2_READ_TIMEOUT", "0"},
+		{"OAUTH2_READ_TIMEOUT", "-5s"},
+		{"OAUTH2_WRITE_TIMEOUT", "soon"},
+		{"OAUTH2_IDLE_TIMEOUT", "0s"},
+		{"OAUTH2_MAX_HEADER_BYTES", "0"},
+		{"OAUTH2_MAX_HEADER_BYTES", "big"},
+	} {
+		m := baseEnv(t)
+		m[tc.key] = tc.val
+		_, err := config.Load(env(m))
+		if err == nil || !strings.Contains(err.Error(), tc.key) {
+			t.Errorf("%s=%q: err = %v, want a complaint naming the variable", tc.key, tc.val, err)
+		}
 	}
 }
 
