@@ -170,27 +170,8 @@ func (s *Service) validateRegisteredRedirect(raw string) error {
 	if err != nil || !u.IsAbs() || u.User != nil {
 		return bad("redirect_uri must be an absolute URI without userinfo")
 	}
-	switch u.Scheme {
-	case "https":
-		if u.Hostname() == "" {
-			return bad("redirect_uri needs a host")
-		}
-	case "http":
-		h := u.Hostname()
-		if !(isLoopbackHost(h) || s.insecure) {
-			return bad("http redirect_uri is only allowed for loopback")
-		}
-	case "javascript", "data", "file", "vbscript", "about", "blob", "ftp":
-		return bad("redirect_uri scheme is not allowed")
-	default:
-		// Private-use scheme (RFC 8252 §7.1) must contain a dot.
-		if !strings.Contains(u.Scheme, ".") {
-			return bad("private-use redirect_uri scheme must be a reverse domain name")
-		}
+	if !oauth.RedirectSchemeAllowed(raw, s.insecure) {
+		return bad("redirect_uri scheme or host is not allowed")
 	}
 	return nil
-}
-
-func isLoopbackHost(h string) bool {
-	return h == "localhost" || h == "127.0.0.1" || h == "::1"
 }
