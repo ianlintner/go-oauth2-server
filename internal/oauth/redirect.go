@@ -17,8 +17,9 @@ import (
 // with no explicit port) accepts any port at request time, with scheme, host
 // family and path still exact. "localhost" gets no wildcard.
 //
-// A plain-http URI is accepted only for a loopback host unless
-// allowInsecureHTTP is set (RFC 9700 §2.6).
+// The scheme must also pass RedirectSchemeAllowed: a plain-http URI is
+// accepted only for a loopback host unless allowInsecureHTTP is set
+// (RFC 9700 §2.6), and schemes outside the allow-list are never accepted.
 func MatchRedirectURI(registered []string, requested string, allowInsecureHTTP bool) bool {
 	if requested == "" || strings.Contains(requested, "#") { // §3.1.2: no fragment
 		return false
@@ -28,32 +29,46 @@ func MatchRedirectURI(registered []string, requested string, allowInsecureHTTP b
 			continue
 		}
 		if reg == requested {
-			if httpAllowed(requested, allowInsecureHTTP) {
+			if RedirectSchemeAllowed(requested, allowInsecureHTTP) {
 				return true
 			}
 			continue
 		}
-		if matchLoopbackPort(reg, requested) {
+		if matchLoopbackPort(reg, requested) && RedirectSchemeAllowed(requested, allowInsecureHTTP) {
 			return true
 		}
 	}
 	return false
 }
 
-// httpAllowed enforces the https requirement on an otherwise exact match.
-func httpAllowed(uri string, allowInsecure bool) bool {
-	if !strings.HasPrefix(uri, "http://") {
-		return true // https, private-use scheme, ...
-	}
-	if allowInsecure {
-		return true
-	}
-	u, err := url.Parse(uri)
-	if err != nil {
+// RedirectSchemeAllowed reports whether raw uses a permitted redirect-URI
+// scheme. The scheme is taken from the parsed URI and compared
+// case-insensitively. Permitted: https with a host; http with a loopback
+// literal or "localhost" (or any host when allowInsecure is set); and a
+// private-use scheme containing a dot (RFC 8252 §7.1). The URI must be
+// absolute, without userinfo, whitespace or control characters.
+func RedirectSchemeAllowed(raw string, allowInsecure bool) bool {
+	if raw == "" || strings.ContainsAny(raw, "\x00\r\n 	") {
 		return false
 	}
-	h := u.Hostname()
-	return h == "localhost" || isLoopbackLiteral(h)
+	u, err := url.Parse(raw)
+	if err != nil || !u.IsAbs() || u.User != nil {
+		return false
+	}
+	switch scheme := strings.ToLower(u.Scheme); scheme {
+	case "https":
+		return u.Hostname() != ""
+	case "http":
+		h := u.Hostname()
+		if h == "" {
+			return false
+		}
+		return allowInsecure || h == "localhost" || isLoopbackLiteral(h)
+	case "javascript", "data", "file", "vbscript", "about", "blob", "ftp":
+		return false
+	default:
+		return strings.Contains(scheme, ".")
+	}
 }
 
 // isLoopbackLiteral reports whether host is a canonical IPv4 or IPv6 loopback
