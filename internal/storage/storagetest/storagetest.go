@@ -44,6 +44,7 @@ func Run(t *testing.T, f Factory) {
 		{"AccessTokens", testAccessTokens},
 		{"DeviceCodes", testDeviceCodes},
 		{"PushedRequests", testPushedRequests},
+		{"Approvals", testApprovals},
 		{"Transactions", testTransactions},
 		{"Persistence", testPersistence},
 		{"Lifecycle", testLifecycle},
