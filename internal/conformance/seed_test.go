@@ -253,3 +253,14 @@ users:
 		t.Fatalf("scopes = %v, want [photos offline_access] verbatim", got)
 	}
 }
+
+func TestSeedRejectsUnsafeRedirectScheme(t *testing.T) {
+	body := "issuer: http://localhost:8080\nclients:\n  - {client_id: c, public: true, token_endpoint_auth_method: none, redirect_uris: ['javascript:alert(1)']}\nusers:\n  - {username: u, password: p}\n"
+	_, err := conformance.LoadSeed(writeSeed(t, body))
+	if err == nil || !strings.Contains(err.Error(), "redirect_uris") {
+		t.Fatalf("err = %v, want an error naming redirect_uris", err)
+	}
+	if strings.Contains(err.Error(), "javascript") {
+		t.Fatalf("error must not echo the URI value: %v", err)
+	}
+}
