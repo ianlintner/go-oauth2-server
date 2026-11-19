@@ -25,6 +25,13 @@ func (h *oauthHandlers) introspect(w http.ResponseWriter, r *http.Request) {
 		h.fail(w, r, err)
 		return
 	}
+	// RFC 7662 §2.1: the caller must be authorized. A public client is only
+	// identified by its client_id, which is not authentication, so it is
+	// refused here (revocation still accepts it, RFC 7009 §2.1).
+	if client.Public {
+		h.fail(w, r, oauth.InvalidClient("introspection requires client authentication", true))
+		return
+	}
 	if h.tokens == nil {
 		h.fail(w, r, oauth.ServerError(errNoTokenService))
 		return
