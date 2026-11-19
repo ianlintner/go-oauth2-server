@@ -101,12 +101,12 @@ func TestResourceIsRefusedNeverIgnored(t *testing.T) {
 
 func TestUserInfoAcceptsATokenForTheIssuer(t *testing.T) {
 	e := newTokenEnv(t)
-	at := e.issueAccessToken(t, "client-a", "user-1")
+	at := e.issueAccessTokenScope(t, "client-a", "user-1", "openid")
 	if rec := e.get("/oauth/userinfo", bearerAuth(at.Value)); rec.Code != http.StatusOK {
 		t.Fatalf("%d %s", rec.Code, rec.Body.String())
 	}
 	other, err := e.tokens.Issue(context.Background(), token.IssueParams{
-		ClientID: "client-a", Subject: "user-1", Scope: "read", Audience: []string{resB},
+		ClientID: "client-a", Subject: "user-1", Scope: "openid", Audience: []string{resB},
 	})
 	if err != nil {
 		t.Fatal(err)

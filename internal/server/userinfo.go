@@ -80,6 +80,20 @@ func (h *oauthHandlers) userinfo(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	// Scope (OIDC Core §5.3.1, RFC 6750 §3.1): UserInfo serves only tokens
+	// issued with the openid scope. The scope is read from the verified
+	// claims. The client credentials grant refuses openid, so a token that
+	// carries it was issued on behalf of a user.
+	if !slices.Contains(strings.Fields(verified.Scope), "openid") {
+		if dpopScheme {
+			w.Header().Set("WWW-Authenticate", `DPoP error="insufficient_scope", scope="openid"`)
+		} else {
+			w.Header().Set("WWW-Authenticate", `Bearer error="insufficient_scope", scope="openid"`)
+		}
+		writeBearerError(w, http.StatusForbidden, "insufficient_scope")
+		return
+	}
+
 	body := map[string]any{
 		"sub": verified.Subject,
 	}

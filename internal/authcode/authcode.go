@@ -399,6 +399,11 @@ func (s *Service) clientCredentials(ctx context.Context, client oauth.Client, p 
 	if err != nil {
 		return TokenResponse{}, err
 	}
+	// There is no user behind this grant, so the OpenID scope has no meaning
+	// here; refusing it keeps UserInfo from vouching for a client identity.
+	if hasScope(scope, "openid") {
+		return TokenResponse{}, oauth.InvalidScope("the openid scope requires a user")
+	}
 	// The subject of a machine-to-machine token is the client itself (RFC 9068
 	// §2.2); no refresh token is issued for this grant.
 	audience, err := s.validateResource(client, p.Get("resource"))
