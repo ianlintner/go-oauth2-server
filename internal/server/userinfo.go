@@ -3,6 +3,7 @@ package server
 import (
 	"encoding/json"
 	"net/http"
+	"slices"
 	"strings"
 
 	"github.com/ianlintner/go-oauth2-server/internal/oauth"
@@ -41,6 +42,18 @@ func (h *oauthHandlers) userinfo(w http.ResponseWriter, r *http.Request) {
 	verified, err := h.tokens.VerifyAccessToken(r.Context(), token)
 	if err != nil {
 		// Any bad, expired, revoked or unknown token is invalid_token.
+		if dpopScheme {
+			dpopChallenge(w, "invalid_token")
+		} else {
+			w.Header().Set("WWW-Authenticate", `Bearer error="invalid_token"`)
+		}
+		writeBearerError(w, http.StatusUnauthorized, "invalid_token")
+		return
+	}
+
+	// Audience (RFC 9068 §4): this endpoint is a resource of the issuer, so a
+	// token minted for another resource is not accepted here.
+	if !slices.Contains(verified.Audience, h.issuer) {
 		if dpopScheme {
 			dpopChallenge(w, "invalid_token")
 		} else {

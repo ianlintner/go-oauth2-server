@@ -17,6 +17,7 @@ import (
 	"errors"
 	"fmt"
 	"net/url"
+	"slices"
 	"strings"
 	"time"
 
@@ -177,6 +178,7 @@ type AuthRequest struct {
 	Scope         string
 	CodeChallenge string
 	Nonce         string // OIDC nonce, echoed in the id_token
+	Audience      string // validated RFC 8707 resource, "" when none was requested
 }
 
 // TokenResponse is a successful token response (RFC 6749 §5.1).
@@ -264,9 +266,13 @@ func (s *Service) ValidateRequest(c oauth.Client, redirectURI string, p oauth.Pa
 	if err != nil {
 		return AuthRequest{}, err
 	}
+	audience, err := s.validateResource(c, p.Get("resource"))
+	if err != nil {
+		return AuthRequest{}, err
+	}
 	return AuthRequest{
 		Client: c, RedirectURI: redirectURI, State: p.Get("state"),
-		Scope: scope, CodeChallenge: challenge, Nonce: p.Get("nonce"),
+		Scope: scope, CodeChallenge: challenge, Nonce: p.Get("nonce"), Audience: audience,
 	}, nil
 }
 
@@ -288,6 +294,7 @@ func (s *Service) IssueCode(ctx context.Context, req AuthRequest, userID string)
 		CodeChallenge:       req.CodeChallenge,
 		CodeChallengeMethod: oauth.MethodS256,
 		Nonce:               req.Nonce,
+		Audience:            req.Audience,
 		ExpiresAt:           s.clock.Now().Add(s.codeTTL),
 	}
 	if err := s.store.AuthCodes().Create(ctx, rec); err != nil {
@@ -390,7 +397,13 @@ func (s *Service) redeemCode(ctx context.Context, client oauth.Client, p oauth.P
 	if rec.CodeChallengeMethod != oauth.MethodS256 || !oauth.VerifyS256(rec.CodeChallenge, verifier) {
 		return TokenResponse{}, oauth.InvalidGrant("code_verifier does not match the code_challenge")
 	}
-	resp, err := s.issueTokens(ctx, client.ID, rec.UserID, rec.Scope, true, "")
+	// RFC 8707 §2.2: a resource named at the token request must be the one the
+	// code was authorized for; the audience never widens at redemption.
+	audience, err := s.boundAudience(client, rec.Audience, p.Get("resource"))
+	if err != nil {
+		return TokenResponse{}, err
+	}
+	resp, err := s.issueTokens(ctx, client.ID, rec.UserID, rec.Scope, audience, true, "")
 	if err != nil {
 		return TokenResponse{}, err
 	}
@@ -425,7 +438,11 @@ func (s *Service) clientCredentials(ctx context.Context, client oauth.Client, p 
 	}
 	// The subject of a machine-to-machine token is the client itself (RFC 9068
 	// §2.2); no refresh token is issued for this grant.
-	return s.issueTokens(ctx, client.ID, client.ID, scope, false, "")
+	audience, err := s.validateResource(client, p.Get("resource"))
+	if err != nil {
+		return TokenResponse{}, err
+	}
+	return s.issueTokens(ctx, client.ID, client.ID, scope, audience, false, "")
 }
 
 // refreshToken handles grant_type=refresh_token (RFC 6749 §6): authenticates
@@ -467,6 +484,13 @@ func (s *Service) refreshToken(ctx context.Context, client oauth.Client, p oauth
 		}
 	}
 
+	// The audience is fixed when the family is created and never widens: a
+	// refresh request may repeat it or omit it, nothing else (RFC 8707 §2.2).
+	audience, err := s.boundAudience(client, rec.Audience, p.Get("resource"))
+	if err != nil {
+		return TokenResponse{}, err
+	}
+
 	// Consume (rotate) the presented token within its family. On replay the
 	// family is revoked and the grant refused (reuse detection).
 	rotated, err := s.rotateRefresh(ctx, hash, rec.FamilyID)
@@ -480,7 +504,7 @@ func (s *Service) refreshToken(ctx context.Context, client oauth.Client, p oauth
 	// The replacement shares the rotated token's family so a replayed member
 	// revokes the whole lineage, including this new token (RFC 6819 §5.2.2.3 /
 	// RFC 9700 §2.1.5 cascade revocation).
-	return s.issueTokens(ctx, client.ID, rec.UserID, scope, true, rotated.FamilyID)
+	return s.issueTokens(ctx, client.ID, rec.UserID, scope, audience, true, rotated.FamilyID)
 }
 
 // issueTokens mints an access token and, when withRefresh is true, a refresh
@@ -488,11 +512,11 @@ func (s *Service) refreshToken(ctx context.Context, client oauth.Client, p oauth
 // token joins (empty mints a fresh family). When the Service has a token.Service
 // it uses it for signed RFC 9068 access tokens; otherwise it falls back to the
 // legacy opaque placeholder so the pre-lifecycle contract tests keep passing.
-func (s *Service) issueTokens(ctx context.Context, clientID, subject, scope string, withRefresh bool, familyID string) (TokenResponse, error) {
+func (s *Service) issueTokens(ctx context.Context, clientID, subject, scope, audience string, withRefresh bool, familyID string) (TokenResponse, error) {
 	resp := TokenResponse{TokenType: "Bearer", Scope: scope}
 
 	if s.tokens != nil {
-		at, err := s.tokens.Issue(ctx, token.IssueParams{ClientID: clientID, Subject: subject, Scope: scope, JKT: oauth.DPoPKey(ctx)})
+		at, err := s.tokens.Issue(ctx, token.IssueParams{ClientID: clientID, Subject: subject, Scope: scope, Audience: []string{audience}, JKT: oauth.DPoPKey(ctx)})
 		if err != nil {
 			return TokenResponse{}, err
 		}
@@ -509,7 +533,7 @@ func (s *Service) issueTokens(ctx context.Context, clientID, subject, scope stri
 	}
 
 	if withRefresh {
-		rt, err := s.mintRefreshToken(ctx, clientID, subject, scope, familyID)
+		rt, err := s.mintRefreshToken(ctx, clientID, subject, scope, audience, familyID)
 		if err != nil {
 			return TokenResponse{}, err
 		}
@@ -522,7 +546,7 @@ func (s *Service) issueTokens(ctx context.Context, clientID, subject, scope stri
 // When familyID is non-empty the token joins that existing rotation family
 // (used on rotation so a replay revokes the whole lineage); otherwise a fresh
 // family is minted (a new grant lineage).
-func (s *Service) mintRefreshToken(ctx context.Context, clientID, userID, scope, familyID string) (string, error) {
+func (s *Service) mintRefreshToken(ctx context.Context, clientID, userID, scope, audience, familyID string) (string, error) {
 	raw, err := s.rnd.Bytes(tokenBytes)
 	if err != nil {
 		return "", oauth.ServerError(err)
@@ -541,6 +565,7 @@ func (s *Service) mintRefreshToken(ctx context.Context, clientID, userID, scope,
 		ClientID:  clientID,
 		UserID:    userID,
 		Scope:     scope,
+		Audience:  audience,
 		ExpiresAt: s.clock.Now().Add(s.refreshTTL),
 	}
 	if err := s.store.RefreshTokens().Create(ctx, rec); err != nil {
@@ -800,6 +825,59 @@ func validateScope(c oauth.Client, scope string) (string, error) {
 		}
 	}
 	return scope, nil
+}
+
+// validateResource resolves the RFC 8707 resource indicator of a request to
+// the audience of the access token. An omitted resource yields the issuer
+// itself (the server's own resource endpoints), so a token never leaves
+// without an audience. A resource must be an absolute URI without a fragment
+// (RFC 8707 §2) and must be the issuer or one the client is registered for;
+// anything else is refused with invalid_target, never accepted and ignored.
+// Only one resource per request is supported: a repeated parameter is already
+// refused as a duplicate.
+func (s *Service) validateResource(c oauth.Client, resource string) (string, error) {
+	if resource == "" {
+		return s.defaultAudience(), nil
+	}
+	u, err := url.Parse(resource)
+	if err != nil || !u.IsAbs() || u.Host == "" && u.Opaque == "" || u.Fragment != "" || strings.Contains(resource, "#") {
+		return "", oauth.InvalidTarget("resource must be an absolute URI without a fragment")
+	}
+	if resource == s.defaultAudience() && resource != "" {
+		return resource, nil
+	}
+	if !slices.Contains(c.Resources, resource) {
+		return "", oauth.InvalidTarget("resource is not permitted for this client")
+	}
+	return resource, nil
+}
+
+// boundAudience returns the audience an artifact that outlives its request (an
+// authorization code, a refresh family or a device authorization) was bound
+// to. A resource repeated on the later request must equal it (RFC 8707 §2.2);
+// a different one is invalid_target, never merged. A record written before
+// audiences existed carries none and gets the default. A client's
+// registration is re-checked so a revoked resource stops working at once.
+func (s *Service) boundAudience(c oauth.Client, bound, requested string) (string, error) {
+	if bound == "" {
+		return s.validateResource(c, requested)
+	}
+	if requested != "" && requested != bound {
+		return "", oauth.InvalidTarget("resource differs from the one originally granted")
+	}
+	if bound != s.defaultAudience() && !slices.Contains(c.Resources, bound) {
+		return "", oauth.InvalidTarget("resource is no longer permitted for this client")
+	}
+	return bound, nil
+}
+
+// defaultAudience is the audience of a token requested without a resource:
+// the issuer, which is also what /oauth/userinfo requires.
+func (s *Service) defaultAudience() string {
+	if s.tokens == nil {
+		return ""
+	}
+	return s.tokens.Issuer()
 }
 
 // narrowScope validates that every requested scope was already granted to the
