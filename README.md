@@ -7,7 +7,7 @@ Go port of [`rust-oauth2-server`](https://github.com/ianlintner/rust-oauth2-serv
 ## What is implemented
 
 - `internal/config` — validated configuration, fail-closed on missing/insecure values; secrets (`OAUTH2_SESSION_SECRET` and the signing key) stay out of logs, JSON and `%v`.
-- `internal/oauth` — typed OAuth error (one mapping point to status/headers/body), the injected `Clock`/`Random`/`Signer` ports, the `Store`/repository ports (clients, users, one-time authorization codes, refresh-token rotation families), plus PKCE (S256), exact redirect-URI matching (including the RFC 8252 loopback any-port rule) and parameter parsing that rejects duplicates before any value is read (RFC 6749 §3.1).
+- `internal/oauth` — typed OAuth error (one mapping point to status/headers/body), the injected `Clock`/`Random`/`Signer` ports, the `Store`/repository ports (clients, users, one-time authorization codes, refresh-token rotation families), plus PKCE (S256), exact redirect-URI matching (including the RFC 8252 loopback any-port rule, with one shared scheme allow-list applied at registration, seed load and match time: https, loopback http, or a dotted private-use scheme) and parameter parsing that rejects duplicates before any value is read (RFC 6749 §3.1).
 - `internal/authcode` — the authorization-code engine: authorization request validation, one-time code issuance, confidential (`client_secret_basic`/`client_secret_post`) and public client authentication, atomic single-use code redemption, PKCE verification, and a `client_credentials` grant only where a fixture needs a successful token response.
 - `internal/session` — stateless HMAC-signed resource-owner session cookie keyed by `OAUTH2_SESSION_SECRET`.
 - `internal/server` — `net/http` handlers for `/oauth/authorize`, `/oauth/token` and `/.well-known/oauth-authorization-server`, plus the test-mode `/auth/login` form (conformance only).
@@ -34,13 +34,14 @@ The runner distinguishes stable passing scenarios from deferred draft scenarios;
 ## Running
 
 ```sh
+OAUTH2_ENVIRONMENT=development \
 OAUTH2_ISSUER=https://auth.example.com \
 OAUTH2_SIGNING_KEY_FILE=/path/to/signing.key \
 OAUTH2_SESSION_SECRET="$(openssl rand -base64 32)" \
   go run ./cmd/oauth2-server
 ```
 
-Configuration is read from the environment; see `internal/config` for every variable and its validation. `OAUTH2_STORAGE_DSN` defaults to `:memory:` outside production and is refused in production; a `postgres://` URL selects the pgx adapter. `OAUTH2_METRICS_ENABLED=true` enables `/metrics` on the same listener; restrict scraper access at the network edge. The resource-owner login form is present only under `OAUTH2_CONFORMANCE_MODE=1`.
+Configuration is read from the environment; see `internal/config` for every variable and its validation. `OAUTH2_ENVIRONMENT` selects the validation profile (`development`, `test` or `production`). **When it is unset or empty the server runs as `production`**, so relaxed behavior (http issuer, in-memory storage, insecure redirects, conformance mode) requires an explicit `development` or `test` value; deployments that relied on the former implicit `development` default must now set it. `OAUTH2_STORAGE_DSN` defaults to `:memory:` outside production and is refused in production; a `postgres://` URL selects the pgx adapter, and in production it must carry `sslmode=require`, `verify-ca` or `verify-full`. The signing key must be an RSA key of at least 2048 bits, and its file must not be accessible by group or other (for example mode `0600`; not checked on Windows). HTTP server limits are configurable with `OAUTH2_READ_TIMEOUT` (default `30s`), `OAUTH2_WRITE_TIMEOUT` (`60s`), `OAUTH2_IDLE_TIMEOUT` (`120s`) and `OAUTH2_MAX_HEADER_BYTES` (`32768`); raise them deliberately when running behind a slow proxy. `OAUTH2_METRICS_ENABLED=true` enables `/metrics` on the same listener; restrict scraper access at the network edge. The resource-owner login form is present only under `OAUTH2_CONFORMANCE_MODE=1`.
 
 ### Request throttling
 
