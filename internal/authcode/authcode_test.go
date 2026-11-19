@@ -46,6 +46,13 @@ type env struct {
 
 func newEnv(t *testing.T) *env {
 	t.Helper()
+	// These tests exercise grant logic with bursts of legitimate requests;
+	// the throttling tests below opt in to explicit limits.
+	return newEnvWith(t, func(c *authcode.Config) { c.MaxConcurrentHashes = -1 })
+}
+
+func newEnvWith(t *testing.T, mod func(*authcode.Config)) *env {
+	t.Helper()
 	st, err := sqlite.Open(sqlite.MemoryDSN)
 	if err != nil {
 		t.Fatal(err)
@@ -82,7 +89,11 @@ func newEnv(t *testing.T) *env {
 	}
 
 	clk := &clock{t: time.Unix(1_700_000_000, 0).UTC()}
-	svc, err := authcode.New(authcode.Config{Store: st, Clock: clk, Random: rnd})
+	cfg := authcode.Config{Store: st, Clock: clk, Random: rnd}
+	if mod != nil {
+		mod(&cfg)
+	}
+	svc, err := authcode.New(cfg)
 	if err != nil {
 		t.Fatal(err)
 	}

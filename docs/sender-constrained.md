@@ -68,8 +68,10 @@ are not claimed (see "Not implemented").
   contract's `mtls-request` helper does not exist in the runner yet either.
 - DPoP server nonces, persistent/shared replay store, refresh-token binding for
   public clients, `dpop_jkt` at the authorization endpoint / PAR.
-- RFC 9700 controls beyond those already present: per-client rate limiting and
-  invalid-client throttling (scenarios `sender-constrained.abuse.*`: the three
+- RFC 9700 controls beyond those already present: in-process per-client-id
+  failure budgets and a concurrent-hash bound now exist (README, "Request
+  throttling"), but the contract does not express throttling, so the runner has
+  no scenario that exercises them (scenarios `sender-constrained.abuse.*`: the three
   `PASS` lines in the runner are placeholder scenarios that assert only HTTP 200,
   not evidence of rate limiting).
 
