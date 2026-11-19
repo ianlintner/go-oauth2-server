@@ -64,6 +64,7 @@ func (s *Service) PushAuthorizationRequest(ctx context.Context, authorization st
 		ClientID:      client.ID,
 		RedirectURI:   req.RedirectURI,
 		Scope:         req.Scope,
+		Audience:      req.Audience,
 		State:         req.State,
 		CodeChallenge: req.CodeChallenge,
 		Nonce:         req.Nonce,
@@ -139,6 +140,6 @@ func (s *Service) RedeemPushed(ctx context.Context, clientID, requestURI string)
 	}
 	return AuthRequest{
 		Client: client, RedirectURI: rec.RedirectURI, State: rec.State,
-		Scope: rec.Scope, CodeChallenge: rec.CodeChallenge, Nonce: rec.Nonce,
+		Scope: rec.Scope, CodeChallenge: rec.CodeChallenge, Nonce: rec.Nonce, Audience: rec.Audience,
 	}, nil
 }

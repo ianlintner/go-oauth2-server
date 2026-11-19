@@ -235,7 +235,7 @@ func canonicalQuery(p oauth.Params) string {
 // server understands; anything else is not carried across the login.
 var authorizeParamNames = []string{
 	"response_type", "client_id", "redirect_uri", "scope", "state", "nonce",
-	"code_challenge", "code_challenge_method", "request", "request_uri",
+	"code_challenge", "code_challenge_method", "request", "request_uri", "resource",
 }
 
 // ---- POST /oauth/token ----

@@ -128,6 +128,11 @@ type IssueParams struct {
 	Subject  string // the resource-owner id, used as the "sub" claim
 	Scope    string // space-separated scopes
 
+	// Audience lists the resource servers the token is intended for (the
+	// "aud" claim, RFC 9068 §2.2). It must not be empty: Issue never mints an
+	// audience-less token.
+	Audience []string
+
 	// JKT, when set, binds the token to the DPoP proof key with this RFC 7638
 	// thumbprint through a cnf.jkt claim (RFC 9449 §6.1) and makes the token
 	// type DPoP. Empty mints an ordinary bearer token.
@@ -143,6 +148,7 @@ type AccessToken struct {
 	IssuedAt  time.Time
 	ExpiresAt time.Time
 	Scope     string
+	Audience  []string
 }
 
 // Issue mints an access token: it generates a jti, signs the RFC 9068 claim
@@ -155,6 +161,14 @@ func (s *Service) Issue(ctx context.Context, p IssueParams) (AccessToken, error)
 	}
 	if p.Subject == "" {
 		return AccessToken{}, oauth.InvalidRequest("subject is required")
+	}
+	if len(p.Audience) == 0 {
+		return AccessToken{}, oauth.ServerError(errNoAudience)
+	}
+	for _, a := range p.Audience {
+		if a == "" {
+			return AccessToken{}, oauth.ServerError(errNoAudience)
+		}
 	}
 
 	raw, err := s.rnd.Bytes(jtiBytes)
@@ -175,6 +189,12 @@ func (s *Service) Issue(ctx context.Context, p IssueParams) (AccessToken, error)
 		"exp":       exp.Unix(),
 		"scope":     p.Scope,
 		"kid":       s.signer.Kid(),
+	}
+	if len(p.Audience) == 1 {
+		// RFC 7519 §4.1.3: a single audience may be a plain string.
+		claims["aud"] = p.Audience[0]
+	} else {
+		claims["aud"] = p.Audience
 	}
 	tokenType := TokenTypeName
 	if p.JKT != "" {
@@ -205,8 +225,13 @@ func (s *Service) Issue(ctx context.Context, p IssueParams) (AccessToken, error)
 		IssuedAt:  now,
 		ExpiresAt: exp,
 		Scope:     p.Scope,
+		Audience:  append([]string(nil), p.Audience...),
 	}, nil
 }
+
+// Issuer returns the issuer identifier placed in the "iss" claim; it is also
+// the audience of tokens meant for the server's own resource endpoints.
+func (s *Service) Issuer() string { return s.issuer }
 
 // TokenInfo is the RFC 7662 introspection result. ExpiresAt/IssuedAt are Unix
 // seconds; they are zero when unknown (an inactive token).
@@ -219,6 +244,8 @@ type TokenInfo struct {
 	TokenType string
 	JTI       string
 	Issuer    string
+	// Audience is the token's "aud" claim as a list.
+	Audience  []string
 	ExpiresAt int64
 	IssuedAt  int64
 	// JKT is the DPoP proof-key thumbprint the token is bound to, or empty.
@@ -232,6 +259,9 @@ type VerifiedToken struct {
 	Subject  string
 	Scope    string
 	JTI      string
+	// Audience is the token's "aud" claim; a resource server must check that
+	// it names itself.
+	Audience []string
 	// JKT is the cnf.jkt binding; non-empty means the token is DPoP-bound and
 	// must be presented with a matching proof, never as a bare Bearer.
 	JKT string
@@ -244,12 +274,15 @@ type claims struct {
 	ClientID string
 	JTI      string
 	Scope    string
+	Audience []string
 	JKT      string
 	IssuedAt time.Time
 	Expires  time.Time
 }
 
 var errInvalidToken = errors.New("token: invalid access token")
+
+var errNoAudience = errors.New("token: refusing to issue an access token without an audience")
 
 // resolve verifies the token's signature and typ (via the injected verifier)
 // and validates the RFC 9068 claims against this service's issuer and clock. It
@@ -292,6 +325,14 @@ func (s *Service) resolve(ctx context.Context, token string) (claims, error) {
 
 	c.Scope, _ = m["scope"].(string)
 
+	// aud is REQUIRED (RFC 9068 §2.2): a string or a non-empty array of
+	// non-empty strings. A token without one is not one this server minted.
+	aud, ok := audClaim(m["aud"])
+	if !ok {
+		return claims{}, errInvalidToken
+	}
+	c.Audience = aud
+
 	// Sender constraint. A cnf this server did not mint (anything but a
 	// non-empty jkt) is refused rather than read as "unbound": treating an
 	// unknown confirmation method as absent would downgrade it to a bearer.
@@ -330,6 +371,32 @@ func (s *Service) resolve(ctx context.Context, token string) (claims, error) {
 	return c, nil
 }
 
+// audClaim reads an RFC 7519 §4.1.3 audience: a non-empty string or a non-empty
+// array of non-empty strings.
+func audClaim(v any) ([]string, bool) {
+	switch a := v.(type) {
+	case string:
+		if a == "" {
+			return nil, false
+		}
+		return []string{a}, true
+	case []any:
+		if len(a) == 0 {
+			return nil, false
+		}
+		out := make([]string, 0, len(a))
+		for _, e := range a {
+			str, ok := e.(string)
+			if !ok || str == "" {
+				return nil, false
+			}
+			out = append(out, str)
+		}
+		return out, true
+	}
+	return nil, false
+}
+
 // numClaim reads an integer-valued JWT numeric claim (JSON numbers decode as
 // float64 through the verifier).
 func numClaim(v any) (int64, bool) {
@@ -356,6 +423,7 @@ func (s *Service) VerifyAccessToken(ctx context.Context, token string) (Verified
 		ClientID: c.ClientID,
 		Subject:  c.Subject,
 		Scope:    c.Scope,
+		Audience: c.Audience,
 		JTI:      c.JTI,
 		JKT:      c.JKT,
 	}, nil
@@ -398,6 +466,7 @@ func (s *Service) Introspect(ctx context.Context, token string) (TokenInfo, erro
 		JKT:       c.JKT,
 		JTI:       rec.JTI,
 		Issuer:    s.issuer,
+		Audience:  c.Audience,
 		ExpiresAt: rec.ExpiresAt.Unix(),
 		IssuedAt:  rec.IssuedAt.Unix(),
 	}, nil
