@@ -56,6 +56,10 @@ type AuthorizationCode struct {
 	CodeChallenge       string
 	CodeChallengeMethod string
 	Nonce               string // OIDC nonce from the authorization request, "" if none
+	// GrantID identifies the grant this code starts. Tokens minted from the
+	// code carry it, so a replayed code can revoke them. "" marks a record
+	// that predates grant linking.
+	GrantID string
 	// Audience is the resource indicator the code was authorized for; "" for a
 	// record written before audiences existed.
 	Audience  string
@@ -67,9 +71,12 @@ type AuthorizationCode struct {
 type RefreshToken struct {
 	TokenHash string
 	FamilyID  string
-	ClientID  string
-	UserID    string
-	Scope     string
+	// GrantID is the grant the token belongs to; "" marks a record that
+	// predates grant linking.
+	GrantID  string
+	ClientID string
+	UserID   string
+	Scope    string
 	// Audience is the resource the family is bound to; it never widens on
 	// rotation. "" for a record written before audiences existed.
 	Audience  string
@@ -81,7 +88,10 @@ type RefreshToken struct {
 // primary key; the token value itself is a JWT signed with the server key and
 // is never stored, only the jti and its lifecycle metadata.
 type AccessToken struct {
-	JTI       string
+	JTI string
+	// GrantID is the grant the token was issued under; "" means unlinked
+	// (a legacy record) and never matches a grant revocation.
+	GrantID   string
 	ClientID  string
 	UserID    string
 	Scope     string
@@ -160,6 +170,10 @@ type AuthCodeRepository interface {
 	// ErrAlreadyConsumed; an unknown hash returns ErrNotFound. Expiry is the
 	// caller's decision (an expired code is still burned).
 	Consume(ctx context.Context, codeHash string, now time.Time) (AuthorizationCode, error)
+	// GetByHash returns the code without consuming it, even when it was
+	// already consumed or has expired. It returns ErrNotFound for an unknown
+	// hash. It lets a replay be tied back to the grant the code started.
+	GetByHash(ctx context.Context, codeHash string) (AuthorizationCode, error)
 }
 
 // RefreshTokenRepository stores refresh tokens and their rotation families.
@@ -192,6 +206,11 @@ type AccessTokenRepository interface {
 	// Revoke marks the token revoked and reports whether it was newly
 	// revoked. Revoking an unknown or already-revoked token is not an error.
 	Revoke(ctx context.Context, jti string, now time.Time) (bool, error)
+	// RevokeByGrant revokes, in one statement, every active access token
+	// issued under grantID and reports how many were newly revoked. Revoking
+	// an unknown or already-revoked grant is not an error. An empty grantID
+	// matches nothing: "" marks unlinked legacy rows, never a wildcard.
+	RevokeByGrant(ctx context.Context, grantID string, now time.Time) (int, error)
 }
 
 // DeviceCodeRepository stores RFC 8628 device authorizations.
@@ -254,4 +273,25 @@ type Store interface {
 	Ping(ctx context.Context) error
 	// Close releases resources.
 	Close() error
+}
+
+// RevokeGrant ends a grant: it revokes the refresh family and every access
+// token issued under it in one transaction, so a failure leaves neither half
+// applied. Both steps are idempotent, so repeating the call (including from a
+// concurrent request) is safe. familyID or grantID may be empty when the grant
+// has no refresh family or no linked access tokens.
+func RevokeGrant(ctx context.Context, store Store, familyID, grantID string, now time.Time) error {
+	return store.WithTx(ctx, func(ctx context.Context, tx Repositories) error {
+		if familyID != "" {
+			if _, err := tx.RefreshTokens().RevokeFamily(ctx, familyID, now); err != nil {
+				return err
+			}
+		}
+		if grantID != "" {
+			if _, err := tx.AccessTokens().RevokeByGrant(ctx, grantID, now); err != nil {
+				return err
+			}
+		}
+		return nil
+	})
 }

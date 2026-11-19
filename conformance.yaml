@@ -20,8 +20,12 @@
 # NOTE (token-lifecycle): all stable token-lifecycle scenarios now pass. The
 # two reference-deviation scenarios (revocation.cross-client and
 # revocation.refresh-cascades-to-access) are SHOULD-level deviations that the
-# runner defers rather than fails; this implementation intentionally matches the
-# reference SUT's behaviour for both.
+# runner defers rather than fails. revocation.cross-client still matches the
+# reference SUT's behaviour. Revoking a refresh token, or replaying a refresh
+# token or an authorization code, now also revokes the access tokens of the same
+# grant (RFC 7009 §2.1, RFC 9700 §4.14.2), so revocation.refresh-cascades-to-access
+# deviates from the reference on purpose. The contract runner was not run for
+# this change: whether the deferred scenario now asserts and passes is unverified.
 implementation: go-oauth2-server
 contract: 985fef7aca4835a7ab4fb92c94e8f979f7308189
 # sender-constrained (v0.5): see docs/sender-constrained.md. Only the 7

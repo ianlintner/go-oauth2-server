@@ -87,17 +87,19 @@ func sampleCode(hash string) oauth.AuthorizationCode {
 		Scope:               "openid profile",
 		CodeChallenge:       "challenge-" + hash,
 		CodeChallengeMethod: "S256",
+		GrantID:             "grant-" + hash,
 		ExpiresAt:           ref.Add(time.Minute),
 	}
 }
 
 func sampleRefresh(hash, family string) oauth.RefreshToken {
-	return oauth.RefreshToken{TokenHash: hash, FamilyID: family, ClientID: "client-a", UserID: "user-1", Scope: "openid", ExpiresAt: ref.Add(24 * time.Hour)}
+	return oauth.RefreshToken{TokenHash: hash, FamilyID: family, GrantID: "grant-" + family, ClientID: "client-a", UserID: "user-1", Scope: "openid", ExpiresAt: ref.Add(24 * time.Hour)}
 }
 
 func sampleAccessToken(jti string) oauth.AccessToken {
 	return oauth.AccessToken{
 		JTI:       jti,
+		GrantID:   "grant-" + jti,
 		ClientID:  "client-a",
 		UserID:    "user-1",
 		Scope:     "openid profile",
@@ -259,10 +261,25 @@ func testAuthCodes(t *testing.T, f Factory) {
 		if got != (oauth.AuthorizationCode{
 			CodeHash: want.CodeHash, ClientID: want.ClientID, UserID: want.UserID, RedirectURI: want.RedirectURI,
 			Scope: want.Scope, CodeChallenge: want.CodeChallenge, CodeChallengeMethod: want.CodeChallengeMethod, Nonce: want.Nonce,
-			ExpiresAt: got.ExpiresAt,
+			GrantID: want.GrantID, ExpiresAt: got.ExpiresAt,
 		}) || !got.ExpiresAt.Equal(want.ExpiresAt) {
 			t.Fatalf("code mismatch\n got: %+v\nwant: %+v", got, want)
 		}
+	})
+
+	t.Run("get by hash reads a consumed code with its grant id", func(t *testing.T) {
+		s := newStore(t, f)
+		want := sampleCode("h1")
+		mustNoErr(t, s.AuthCodes().Create(ctx, want), "create")
+		_, err := s.AuthCodes().Consume(ctx, "h1", ref)
+		mustNoErr(t, err, "consume")
+		got, err := s.AuthCodes().GetByHash(ctx, "h1")
+		mustNoErr(t, err, "get consumed")
+		if got.GrantID != want.GrantID || got.GrantID == "" {
+			t.Fatalf("GrantID = %q, want %q", got.GrantID, want.GrantID)
+		}
+		_, err = s.AuthCodes().GetByHash(ctx, "ghost")
+		wantErr(t, err, oauth.ErrNotFound, "get unknown")
 	})
 
 	t.Run("second consume is replay", func(t *testing.T) {
@@ -578,7 +595,7 @@ func testAccessTokens(t *testing.T, f Factory) {
 		mustNoErr(t, s.AccessTokens().Create(ctx, want), "create")
 		got, err := s.AccessTokens().GetByJTI(ctx, "j1")
 		mustNoErr(t, err, "get")
-		if got.JTI != want.JTI || got.ClientID != want.ClientID || got.UserID != want.UserID ||
+		if got.JTI != want.JTI || got.GrantID != want.GrantID || got.ClientID != want.ClientID || got.UserID != want.UserID ||
 			got.Scope != want.Scope || !got.IssuedAt.Equal(want.IssuedAt) || !got.ExpiresAt.Equal(want.ExpiresAt) ||
 			!got.RevokedAt.IsZero() {
 			t.Fatalf("token mismatch\n got: %+v\nwant: %+v", got, want)
@@ -614,6 +631,70 @@ func testAccessTokens(t *testing.T, f Factory) {
 		mustNoErr(t, err, "second revoke")
 		if revoked {
 			t.Fatal("second revoke reported a change on an already-revoked token")
+		}
+	})
+
+	t.Run("revoke by grant revokes only that grant's active tokens", func(t *testing.T) {
+		s := newStore(t, f)
+		for _, jti := range []string{"a1", "a2"} {
+			at := sampleAccessToken(jti)
+			at.GrantID = "g1"
+			mustNoErr(t, s.AccessTokens().Create(ctx, at), "create "+jti)
+		}
+		other := sampleAccessToken("b1")
+		other.GrantID = "g2"
+		mustNoErr(t, s.AccessTokens().Create(ctx, other), "create b1")
+		// One member of g1 is already revoked: it is not counted again.
+		_, err := s.AccessTokens().Revoke(ctx, "a2", ref)
+		mustNoErr(t, err, "pre-revoke a2")
+
+		n, err := s.AccessTokens().RevokeByGrant(ctx, "g1", ref.Add(time.Minute))
+		mustNoErr(t, err, "revoke by grant")
+		if n != 1 {
+			t.Fatalf("newly revoked = %d, want 1", n)
+		}
+		for jti, wantRevoked := range map[string]bool{"a1": true, "a2": true, "b1": false} {
+			got, err := s.AccessTokens().GetByJTI(ctx, jti)
+			mustNoErr(t, err, "get "+jti)
+			if got.RevokedAt.IsZero() == wantRevoked {
+				t.Fatalf("%s revoked = %v, want %v", jti, !got.RevokedAt.IsZero(), wantRevoked)
+			}
+		}
+		// Idempotent: a second revoke of the same grant is not an error.
+		n, err = s.AccessTokens().RevokeByGrant(ctx, "g1", ref.Add(2*time.Minute))
+		mustNoErr(t, err, "second revoke by grant")
+		if n != 0 {
+			t.Fatalf("second revoke newly revoked = %d, want 0", n)
+		}
+		n, err = s.AccessTokens().RevokeByGrant(ctx, "unknown", ref)
+		mustNoErr(t, err, "revoke unknown grant")
+		if n != 0 {
+			t.Fatalf("unknown grant revoked = %d, want 0", n)
+		}
+	})
+
+	t.Run("revoke by grant does not match an empty grant id", func(t *testing.T) {
+		s := newStore(t, f)
+		for _, jti := range []string{"l1", "l2"} {
+			at := sampleAccessToken(jti)
+			at.GrantID = ""
+			mustNoErr(t, s.AccessTokens().Create(ctx, at), "create "+jti)
+		}
+		linked := sampleAccessToken("k1")
+		linked.GrantID = "g1"
+		mustNoErr(t, s.AccessTokens().Create(ctx, linked), "create k1")
+
+		n, err := s.AccessTokens().RevokeByGrant(ctx, "", ref)
+		mustNoErr(t, err, "revoke empty grant")
+		if n != 0 {
+			t.Fatalf("empty grant revoked %d tokens, want 0", n)
+		}
+		for _, jti := range []string{"l1", "l2", "k1"} {
+			got, err := s.AccessTokens().GetByJTI(ctx, jti)
+			mustNoErr(t, err, "get "+jti)
+			if !got.RevokedAt.IsZero() {
+				t.Fatalf("%s was revoked by an empty grant id", jti)
+			}
 		}
 	})
 

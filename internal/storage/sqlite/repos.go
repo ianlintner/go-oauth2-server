@@ -123,10 +123,10 @@ type authCodeRepo struct{ db execer }
 func (r *authCodeRepo) Create(ctx context.Context, c oauth.AuthorizationCode) error {
 	_, err := r.db.ExecContext(ctx,
 		`INSERT INTO auth_codes (code_hash, client_id, user_id, redirect_uri, scope,
-		                         code_challenge, code_challenge_method, nonce, audience, expires_at)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		                         code_challenge, code_challenge_method, nonce, audience, grant_id, expires_at)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		c.CodeHash, c.ClientID, c.UserID, c.RedirectURI, c.Scope,
-		c.CodeChallenge, c.CodeChallengeMethod, c.Nonce, c.Audience, nanos(c.ExpiresAt))
+		c.CodeChallenge, c.CodeChallengeMethod, c.Nonce, c.Audience, c.GrantID, nanos(c.ExpiresAt))
 	return createErr(err)
 }
 
@@ -142,12 +142,35 @@ func (r *authCodeRepo) Consume(ctx context.Context, codeHash string, now time.Ti
 		`UPDATE auth_codes SET consumed_at = ?
 		 WHERE code_hash = ? AND consumed_at IS NULL
 		 RETURNING code_hash, client_id, user_id, redirect_uri, scope,
-		           code_challenge, code_challenge_method, nonce, audience, expires_at`,
+		           code_challenge, code_challenge_method, nonce, audience, grant_id, expires_at`,
 		nanos(now), codeHash).
 		Scan(&c.CodeHash, &c.ClientID, &c.UserID, &c.RedirectURI, &c.Scope,
-			&c.CodeChallenge, &c.CodeChallengeMethod, &c.Nonce, &c.Audience, &expires)
+			&c.CodeChallenge, &c.CodeChallengeMethod, &c.Nonce, &c.Audience, &c.GrantID, &expires)
 	if errors.Is(err, sql.ErrNoRows) {
 		return oauth.AuthorizationCode{}, r.missOrConsumed(ctx, `SELECT 1 FROM auth_codes WHERE code_hash = ?`, codeHash)
+	}
+	if err != nil {
+		return oauth.AuthorizationCode{}, err
+	}
+	c.ExpiresAt = fromNanos(expires)
+	return c, nil
+}
+
+// GetByHash reads the code without consuming it, so a replayed code can be
+// tied back to its grant.
+func (r *authCodeRepo) GetByHash(ctx context.Context, codeHash string) (oauth.AuthorizationCode, error) {
+	var (
+		c       oauth.AuthorizationCode
+		expires int64
+	)
+	err := r.db.QueryRowContext(ctx,
+		`SELECT code_hash, client_id, user_id, redirect_uri, scope,
+		        code_challenge, code_challenge_method, nonce, audience, grant_id, expires_at
+		 FROM auth_codes WHERE code_hash = ?`, codeHash).
+		Scan(&c.CodeHash, &c.ClientID, &c.UserID, &c.RedirectURI, &c.Scope,
+			&c.CodeChallenge, &c.CodeChallengeMethod, &c.Nonce, &c.Audience, &c.GrantID, &expires)
+	if errors.Is(err, sql.ErrNoRows) {
+		return oauth.AuthorizationCode{}, oauth.ErrNotFound
 	}
 	if err != nil {
 		return oauth.AuthorizationCode{}, err
@@ -181,9 +204,9 @@ type refreshRepo struct{ db execer }
 
 func (r *refreshRepo) Create(ctx context.Context, t oauth.RefreshToken) error {
 	_, err := r.db.ExecContext(ctx,
-		`INSERT INTO refresh_tokens (token_hash, family_id, client_id, user_id, scope, audience, expires_at)
-		 VALUES (?, ?, ?, ?, ?, ?, ?)`,
-		t.TokenHash, t.FamilyID, t.ClientID, t.UserID, t.Scope, t.Audience, nanos(t.ExpiresAt))
+		`INSERT INTO refresh_tokens (token_hash, family_id, grant_id, client_id, user_id, scope, audience, expires_at)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+		t.TokenHash, t.FamilyID, t.GrantID, t.ClientID, t.UserID, t.Scope, t.Audience, nanos(t.ExpiresAt))
 	return createErr(err)
 }
 
@@ -197,9 +220,9 @@ func (r *refreshRepo) GetByHash(ctx context.Context, tokenHash string) (oauth.Re
 		expires int64
 	)
 	err := r.db.QueryRowContext(ctx,
-		`SELECT token_hash, family_id, client_id, user_id, scope, audience, expires_at
+		`SELECT token_hash, family_id, grant_id, client_id, user_id, scope, audience, expires_at
 		 FROM refresh_tokens WHERE token_hash = ?`, tokenHash).
-		Scan(&t.TokenHash, &t.FamilyID, &t.ClientID, &t.UserID, &t.Scope, &t.Audience, &expires)
+		Scan(&t.TokenHash, &t.FamilyID, &t.GrantID, &t.ClientID, &t.UserID, &t.Scope, &t.Audience, &expires)
 	if errors.Is(err, sql.ErrNoRows) {
 		return oauth.RefreshToken{}, oauth.ErrNotFound
 	}
@@ -223,9 +246,9 @@ func (r *refreshRepo) Rotate(ctx context.Context, tokenHash string, now time.Tim
 		`UPDATE refresh_tokens SET rotated_at = ?
 		 WHERE token_hash = ? AND rotated_at IS NULL
 		   AND NOT EXISTS (SELECT 1 FROM refresh_families f WHERE f.family_id = refresh_tokens.family_id)
-		 RETURNING token_hash, family_id, client_id, user_id, scope, audience, expires_at`,
+		 RETURNING token_hash, family_id, grant_id, client_id, user_id, scope, audience, expires_at`,
 		nanos(now), tokenHash).
-		Scan(&t.TokenHash, &t.FamilyID, &t.ClientID, &t.UserID, &t.Scope, &t.Audience, &expires)
+		Scan(&t.TokenHash, &t.FamilyID, &t.GrantID, &t.ClientID, &t.UserID, &t.Scope, &t.Audience, &expires)
 	if errors.Is(err, sql.ErrNoRows) {
 		return oauth.RefreshToken{}, missOrConsumed(ctx, r.db, `SELECT 1 FROM refresh_tokens WHERE token_hash = ?`, tokenHash)
 	}
@@ -266,9 +289,9 @@ type accessTokenRepo struct{ db execer }
 
 func (r *accessTokenRepo) Create(ctx context.Context, t oauth.AccessToken) error {
 	_, err := r.db.ExecContext(ctx,
-		`INSERT INTO access_tokens (jti, client_id, user_id, scope, issued_at, expires_at)
-		 VALUES (?, ?, ?, ?, ?, ?)`,
-		t.JTI, t.ClientID, t.UserID, t.Scope, nanos(t.IssuedAt), nanos(t.ExpiresAt))
+		`INSERT INTO access_tokens (jti, grant_id, client_id, user_id, scope, issued_at, expires_at)
+		 VALUES (?, ?, ?, ?, ?, ?, ?)`,
+		t.JTI, t.GrantID, t.ClientID, t.UserID, t.Scope, nanos(t.IssuedAt), nanos(t.ExpiresAt))
 	return createErr(err)
 }
 
@@ -279,9 +302,9 @@ func (r *accessTokenRepo) GetByJTI(ctx context.Context, jti string) (oauth.Acces
 		revoked         sql.NullInt64
 	)
 	err := r.db.QueryRowContext(ctx,
-		`SELECT jti, client_id, user_id, scope, issued_at, expires_at, revoked_at
+		`SELECT jti, grant_id, client_id, user_id, scope, issued_at, expires_at, revoked_at
 		 FROM access_tokens WHERE jti = ?`, jti).
-		Scan(&t.JTI, &t.ClientID, &t.UserID, &t.Scope, &issued, &expires, &revoked)
+		Scan(&t.JTI, &t.GrantID, &t.ClientID, &t.UserID, &t.Scope, &issued, &expires, &revoked)
 	if errors.Is(err, sql.ErrNoRows) {
 		return oauth.AccessToken{}, oauth.ErrNotFound
 	}
@@ -310,4 +333,25 @@ func (r *accessTokenRepo) Revoke(ctx context.Context, jti string, now time.Time)
 		return false, err
 	}
 	return n > 0, nil
+}
+
+// RevokeByGrant revokes every still-active access token of the grant in one
+// UPDATE, so it is atomic and idempotent and two concurrent calls both end with
+// the grant dead. An empty grantID matches nothing: ” marks unlinked legacy
+// rows, never a wildcard.
+func (r *accessTokenRepo) RevokeByGrant(ctx context.Context, grantID string, now time.Time) (int, error) {
+	if grantID == "" {
+		return 0, nil
+	}
+	res, err := r.db.ExecContext(ctx,
+		`UPDATE access_tokens SET revoked_at = ? WHERE grant_id = ? AND revoked_at IS NULL`,
+		nanos(now), grantID)
+	if err != nil {
+		return 0, err
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return 0, err
+	}
+	return int(n), nil
 }
