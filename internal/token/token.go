@@ -137,6 +137,12 @@ type IssueParams struct {
 	// thumbprint through a cnf.jkt claim (RFC 9449 §6.1) and makes the token
 	// type DPoP. Empty mints an ordinary bearer token.
 	JKT string
+
+	// Act, when set, is the RFC 8693 §4.1 actor claim: the delegation chain
+	// of parties acting on the subject's behalf, each level an object with
+	// string "sub" and "iss" and optionally a nested "act". Callers build it;
+	// Issue validates its shape and bounds its depth before signing it.
+	Act map[string]any
 }
 
 // AccessToken is an issued access token: the signed JWT value plus the
@@ -201,6 +207,12 @@ func (s *Service) Issue(ctx context.Context, p IssueParams) (AccessToken, error)
 		claims["cnf"] = map[string]any{"jkt": p.JKT}
 		tokenType = TokenTypeDPoP
 	}
+	if p.Act != nil {
+		if _, ok := actDepth(p.Act); !ok {
+			return AccessToken{}, oauth.ServerError(errors.New("token: malformed act claim"))
+		}
+		claims["act"] = p.Act
+	}
 	value, err := s.signer.Sign(ctx, claims)
 	if err != nil {
 		return AccessToken{}, oauth.ServerError(err)
@@ -250,6 +262,8 @@ type TokenInfo struct {
 	IssuedAt  int64
 	// JKT is the DPoP proof-key thumbprint the token is bound to, or empty.
 	JKT string
+	// Act is the RFC 8693 §4.1 delegation chain, or nil.
+	Act map[string]any
 }
 
 // VerifiedToken is the identity carried by a validated access token, for a
@@ -265,6 +279,50 @@ type VerifiedToken struct {
 	// JKT is the cnf.jkt binding; non-empty means the token is DPoP-bound and
 	// must be presented with a matching proof, never as a bare Bearer.
 	JKT string
+	// Act is the RFC 8693 §4.1 delegation chain the token carries, or nil.
+	Act map[string]any
+}
+
+// MaxActDepth bounds how deeply a verified act claim may nest. It is a parse
+// guard, far above any delegation depth the exchange grant allows.
+const MaxActDepth = 64
+
+// actDepth validates an act chain (every level an object with non-empty
+// string sub and iss; nested act an object) and returns its depth. It is
+// iterative so attacker-shaped nesting cannot exhaust the stack.
+func actDepth(act map[string]any) (int, bool) {
+	depth := 0
+	for level := act; level != nil; {
+		depth++
+		if depth > MaxActDepth {
+			return 0, false
+		}
+		if sub, _ := level["sub"].(string); sub == "" {
+			return 0, false
+		}
+		if iss, _ := level["iss"].(string); iss == "" {
+			return 0, false
+		}
+		inner, present := level["act"]
+		if !present || inner == nil {
+			break
+		}
+		next, ok := inner.(map[string]any)
+		if !ok {
+			return 0, false
+		}
+		level = next
+	}
+	return depth, true
+}
+
+// ActDepth returns the number of levels in an act chain (0 for none), and
+// false when the chain is malformed.
+func ActDepth(act map[string]any) (int, bool) {
+	if act == nil {
+		return 0, true
+	}
+	return actDepth(act)
 }
 
 // claims is the validated RFC 9068 claim set.
@@ -276,6 +334,7 @@ type claims struct {
 	Scope    string
 	Audience []string
 	JKT      string
+	Act      map[string]any
 	IssuedAt time.Time
 	Expires  time.Time
 }
@@ -343,6 +402,19 @@ func (s *Service) resolve(ctx context.Context, token string) (claims, error) {
 			return claims{}, errInvalidToken
 		}
 		c.JKT = jkt
+	}
+
+	// act, when present, must be a well-formed delegation chain: this server
+	// only ever signs one, so anything else is not a token it minted.
+	if raw, present := m["act"]; present {
+		act, ok := raw.(map[string]any)
+		if !ok {
+			return claims{}, errInvalidToken
+		}
+		if _, ok := actDepth(act); !ok {
+			return claims{}, errInvalidToken
+		}
+		c.Act = act
 	}
 
 	iat, ok := numClaim(m["iat"])
@@ -426,6 +498,7 @@ func (s *Service) VerifyAccessToken(ctx context.Context, token string) (Verified
 		Audience: c.Audience,
 		JTI:      c.JTI,
 		JKT:      c.JKT,
+		Act:      c.Act,
 	}, nil
 }
 
@@ -464,6 +537,7 @@ func (s *Service) Introspect(ctx context.Context, token string) (TokenInfo, erro
 		Sub:       rec.UserID,
 		TokenType: tokenType,
 		JKT:       c.JKT,
+		Act:       c.Act,
 		JTI:       rec.JTI,
 		Issuer:    s.issuer,
 		Audience:  c.Audience,
