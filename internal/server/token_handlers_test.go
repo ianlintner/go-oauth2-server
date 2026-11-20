@@ -49,6 +49,7 @@ func newTokenEnv(t *testing.T) *tokenEnv {
 		{ID: "client-a", SecretHash: hash("test-only-secret"), AuthMethod: "client_secret_basic", RedirectURIs: []string{callback}, GrantTypes: []string{"authorization_code"}},
 		{ID: "client-b", SecretHash: hash("other-test-secret"), AuthMethod: "client_secret_basic", RedirectURIs: []string{callback}, GrantTypes: []string{"authorization_code"}},
 		{ID: "client-public", Public: true, AuthMethod: "none", RedirectURIs: []string{callback}, GrantTypes: []string{"authorization_code"}},
+		{ID: "client-rt", SecretHash: hash("rt-test-secret"), AuthMethod: "client_secret_basic", RedirectURIs: []string{callback}, GrantTypes: []string{"authorization_code", "refresh_token"}},
 		{ID: "client-cc", SecretHash: hash("test-only-secret"), AuthMethod: "client_secret_basic", GrantTypes: []string{"client_credentials"}},
 		{ID: "client-public-cc", Public: true, AuthMethod: "none", GrantTypes: []string{"client_credentials"}},
 	}

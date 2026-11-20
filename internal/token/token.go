@@ -137,6 +137,12 @@ type IssueParams struct {
 	// thumbprint through a cnf.jkt claim (RFC 9449 §6.1) and makes the token
 	// type DPoP. Empty mints an ordinary bearer token.
 	JKT string
+
+	// JTI, when set, is used as the token's unique id instead of a random
+	// one. The caller must guarantee it is unique (Issue fails on a
+	// collision); it exists so an issuer can derive the id from the grant
+	// that produced the token and revoke it later without extra storage.
+	JTI string
 }
 
 // AccessToken is an issued access token: the signed JWT value plus the
@@ -171,11 +177,14 @@ func (s *Service) Issue(ctx context.Context, p IssueParams) (AccessToken, error)
 		}
 	}
 
-	raw, err := s.rnd.Bytes(jtiBytes)
-	if err != nil {
-		return AccessToken{}, oauth.ServerError(err)
+	jti := p.JTI
+	if jti == "" {
+		raw, err := s.rnd.Bytes(jtiBytes)
+		if err != nil {
+			return AccessToken{}, oauth.ServerError(err)
+		}
+		jti = hex.EncodeToString(raw)
 	}
-	jti := hex.EncodeToString(raw)
 
 	now := s.clock.Now()
 	exp := now.Add(s.ttl)
