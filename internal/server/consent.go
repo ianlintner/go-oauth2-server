@@ -18,7 +18,7 @@ var consentPage = template.Must(template.New("consent").Parse(`<!doctype html>
 <body>
 <h1>Authorize application</h1>
 <p>Signed in as <strong>{{.Username}}</strong>.</p>
-<p>The application <strong>{{.Client}}</strong> is asking for access to your account{{if .Scopes}} with these permissions:{{else}}.{{end}}</p>
+<p>The application <strong>{{.Client}}</strong> (client ID <code>{{.ClientID}}</code>) is asking for access to your account{{if .Scopes}} with these permissions:{{else}}.{{end}}</p>
 {{if .Scopes}}<ul>{{range .Scopes}}<li>{{.}}</li>{{end}}</ul>{{end}}
 <form method="post" action="/auth/consent">
 <input type="hidden" name="return_query" value="{{.ReturnQuery}}">
@@ -32,6 +32,7 @@ var consentPage = template.Must(template.New("consent").Parse(`<!doctype html>
 type consentView struct {
 	Username    string
 	Client      string
+	ClientID    string
 	Scopes      []string
 	ReturnQuery string
 	CSRF        string
@@ -42,7 +43,7 @@ type consentView struct {
 // response (a redirect to the approval page, or an error). Only an explicit
 // stored approval that covers scope lets the request continue; a missing row
 // is never consent.
-func (h *oauthHandlers) requireApproval(w http.ResponseWriter, r *http.Request, user oauth.User, clientID, scope, returnQuery string) (done bool) {
+func (h *oauthHandlers) requireApproval(w http.ResponseWriter, r *http.Request, user oauth.User, clientID, scope, returnQuery, redirectURI, state string) (done bool) {
 	ok, err := h.svc.Approved(r.Context(), user.ID, clientID, scope)
 	if err != nil {
 		h.fail(w, r, err)
@@ -50,6 +51,18 @@ func (h *oauthHandlers) requireApproval(w http.ResponseWriter, r *http.Request, 
 	}
 	if ok {
 		return false
+	}
+	if !h.loginEnabled {
+		// The approval page is not mounted, so there is nothing to redirect
+		// to: refuse. A trusted redirect_uri gets the OAuth error; a pushed
+		// request (redirectURI == "") gets it directly. No code is issued.
+		denied := oauth.AccessDenied("no resource owner approval is available")
+		if redirectURI == "" {
+			h.fail(w, r, denied)
+		} else {
+			h.redirectError(w, r, redirectURI, state, denied)
+		}
+		return true
 	}
 	w.Header().Set("Location", "/auth/consent?return_query="+url.QueryEscape(returnQuery))
 	w.WriteHeader(http.StatusFound)
@@ -119,7 +132,7 @@ func (h *oauthHandlers) consentForm(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	w.WriteHeader(http.StatusOK)
 	_ = consentPage.Execute(w, consentView{
-		Username: user.Username, Client: name, Scopes: strings.Fields(scope),
+		Username: user.Username, Client: name, ClientID: client.ID, Scopes: strings.Fields(scope),
 		ReturnQuery: rq, CSRF: h.sessions.CSRFToken(user.Username, consentPurpose(rq)),
 	})
 }

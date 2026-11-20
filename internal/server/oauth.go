@@ -120,7 +120,7 @@ func (h *oauthHandlers) authorize(w http.ResponseWriter, r *http.Request) {
 	}
 	// No code exists until the resource owner has approved this client for
 	// this scope (a stored approval, or the approval page).
-	if h.requireApproval(w, r, user, req.Client.ID, req.Scope, canonicalQuery(p)) {
+	if h.requireApproval(w, r, user, req.Client.ID, req.Scope, canonicalQuery(p), redirectURI, req.State) {
 		return
 	}
 
@@ -172,7 +172,7 @@ func (h *oauthHandlers) authorizePushed(w http.ResponseWriter, r *http.Request, 
 		h.fail(w, r, err)
 		return
 	}
-	if h.requireApproval(w, r, user, pre.Client.ID, pre.Scope, url.Values{"client_id": {clientID}, "request_uri": {requestURI}}.Encode()) {
+	if h.requireApproval(w, r, user, pre.Client.ID, pre.Scope, url.Values{"client_id": {clientID}, "request_uri": {requestURI}}.Encode(), "", "") {
 		return
 	}
 	req, err := h.svc.RedeemPushed(r.Context(), clientID, requestURI)

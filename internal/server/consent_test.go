@@ -201,3 +201,57 @@ func TestPushedAuthorizationAlsoRequiresApproval(t *testing.T) {
 		t.Fatalf("after approval Location = %q", l)
 	}
 }
+
+func TestConsentPageShowsClientIDForDuplicateNames(t *testing.T) {
+	e := newHandlerEnv(t)
+	c := e.newUser(t, "user-2", "bob")
+	for _, id := range []string{"dup-1", "dup-2"} {
+		cl := oauth.Client{ID: id, Name: "Same Name", Public: true, AuthMethod: "none", RedirectURIs: []string{callback}, GrantTypes: []string{"authorization_code"}}
+		if err := e.store.Clients().Create(context.Background(), cl); err != nil {
+			t.Fatal(err)
+		}
+	}
+	pages := map[string]string{}
+	for _, id := range []string{"dup-1", "dup-2"} {
+		loc := location(t, e.get("/oauth/authorize?"+authQuery(id, callback, nil), cookie(c)))
+		page := e.get(loc.String(), cookie(c))
+		if page.Code != http.StatusOK {
+			t.Fatalf("page %s = %d", id, page.Code)
+		}
+		body := page.Body.String()
+		if !strings.Contains(body, "Same Name") || !strings.Contains(body, "<code>"+id+"</code>") {
+			t.Fatalf("page for %s lacks name or client ID: %s", id, body)
+		}
+		pages[id] = body
+	}
+	if strings.Contains(pages["dup-1"], "<code>dup-2</code>") {
+		t.Fatal("pages are not distinguishable by client ID")
+	}
+}
+
+func TestMissingApprovalWithoutConsentPageIsAccessDenied(t *testing.T) {
+	e := newHandlerEnv(t)
+	c := e.newUser(t, "user-2", "bob")
+	off := e.withoutLogin()
+
+	rec := off.get("/oauth/authorize?"+authQuery("client-a", callback, nil), cookie(c))
+	loc := location(t, rec)
+	if rec.Code != http.StatusFound || loc.Host != "client.example" || loc.Query().Get("error") != "access_denied" || loc.Query().Has("code") || loc.Path == "/auth/consent" {
+		t.Fatalf("direct = %d %q, want access_denied redirect to the client with no code", rec.Code, loc)
+	}
+}
+
+func TestPushedMissingApprovalWithoutConsentPageIsAccessDenied(t *testing.T) {
+	e := newExtEnv(t, false)
+	c := e.newUser(t, "user-2", "bob", "read")
+	ru := pushHTTP(t, e)
+	off := e.withoutLogin()
+	q := url.Values{"client_id": {"client-a"}, "request_uri": {ru}}.Encode()
+	rec := off.get("/oauth/authorize?"+q, cookie(c))
+	if rec.Code != http.StatusBadRequest && rec.Code != http.StatusForbidden {
+		t.Fatalf("pushed = %d %s, want an OAuth error", rec.Code, rec.Body.String())
+	}
+	if strings.Contains(rec.Header().Get("Location"), "code=") || strings.Contains(rec.Header().Get("Location"), "/auth/consent") || !strings.Contains(rec.Body.String(), "access_denied") {
+		t.Fatalf("pushed = %d %q %s", rec.Code, rec.Header().Get("Location"), rec.Body.String())
+	}
+}

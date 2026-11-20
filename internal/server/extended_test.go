@@ -70,11 +70,11 @@ func newExtEnvMode(t *testing.T, registration, conformance bool) *handlerEnv {
 	if err != nil {
 		t.Fatal(err)
 	}
-	h := server.New(server.Deps{
+	deps := server.Deps{
 		Service: svc, Sessions: sess, Issuer: issuer, Conformance: conformance,
 		RegistrationEnabled: registration, RegistrationScopes: []string{"openid", "read"},
-	})
-	return &handlerEnv{h: h, store: st, clock: clk}
+	}
+	return &handlerEnv{h: server.New(deps), store: st, clock: clk, deps: deps}
 }
 
 func (e *handlerEnv) postJSON(target, body string, opts ...reqOpt) *httptest.ResponseRecorder {
