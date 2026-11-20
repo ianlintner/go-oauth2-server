@@ -8,9 +8,9 @@
 // to one error without leaking which check failed.
 //
 // Scope of this slice: proof syntax, signature, header/claim checks, ath
-// binding and single-process jti replay detection. Server-provided nonces
-// (RFC 9449 §8, §9) and a replay store shared across instances or restarts are
-// NOT implemented; see docs/sender-constrained.md.
+// binding and jti replay detection (in-memory, or SQLReplayStore for a store
+// that survives restarts and is shared across instances). Server-provided
+// nonces (RFC 9449 §8, §9) are NOT implemented; see docs/sender-constrained.md.
 package dpop
 
 import (

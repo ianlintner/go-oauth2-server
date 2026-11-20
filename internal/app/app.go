@@ -166,6 +166,15 @@ func Run(ctx context.Context, opts Options) error {
 	if cfg.MetricsEnabled {
 		metrics = observability.New()
 	}
+	// The jti replay store lives in the primary database when the adapter
+	// offers one (restart-safe, shared across instances); the in-memory store
+	// is the fallback for process-local deployments.
+	var replay dpop.ReplayStore = dpop.NewMemoryReplayStore(oauth.SystemClock{}, dpopReplayCapacity)
+	if rs, ok := st.(interface {
+		ReplayStore(oauth.Clock, int) dpop.ReplayStore
+	}); ok && cfg.StorageDSN != config.MemoryDSN {
+		replay = rs.ReplayStore(oauth.SystemClock{}, dpopReplayCapacity)
+	}
 	handler := observability.Trace(log, server.New(server.Deps{
 		Metrics:     metrics,
 		Ping:        st.Ping,
@@ -175,9 +184,7 @@ func Run(ctx context.Context, opts Options) error {
 		Issuer:      cfg.Issuer,
 		Tokens:      tokens,
 		Logger:      log,
-		// DPoP replay state is per process and lost on restart; see
-		// docs/sender-constrained.md for the accepted limits.
-		DPoP: dpop.NewVerifier(dpop.Config{Clock: oauth.SystemClock{}, Replay: dpop.NewMemoryReplayStore(oauth.SystemClock{}, dpopReplayCapacity)}),
+		DPoP:        dpop.NewVerifier(dpop.Config{Clock: oauth.SystemClock{}, Replay: replay}),
 
 		RegistrationEnabled: cfg.DynamicRegistration,
 		RegistrationScopes:  []string{"openid", "read"},
