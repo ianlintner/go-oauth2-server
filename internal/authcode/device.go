@@ -192,9 +192,18 @@ func normalizeUserCode(in string) (string, bool) {
 // counts against the same per-user failure window as DecideDevice: a lookup
 // that finds a live authorization is released, an unknown or expired one is
 // not.
-func (s *Service) DescribeDevice(ctx context.Context, user oauth.User, userCode string) (oauth.DeviceCode, oauth.Client, error) {
+//
+// When intent is not established (the request carries no trustworthy
+// same-origin metadata), intentional is false and failures are charged to a
+// separate describe-only window, so a lookup the user did not make cannot
+// exhaust the budget that guards decisions. Such lookups remain rate limited.
+func (s *Service) DescribeDevice(ctx context.Context, user oauth.User, userCode string, intentional bool) (oauth.DeviceCode, oauth.Client, error) {
 	now := s.clock.Now()
-	if !s.failures.reserve(user.ID, now) {
+	key := user.ID
+	if !intentional {
+		key = "describe:" + user.ID
+	}
+	if !s.failures.reserve(key, now) {
 		return oauth.DeviceCode{}, oauth.Client{}, oauth.InvalidRequest("too many failed attempts; try again later").WithStatus(429)
 	}
 	bad := oauth.InvalidRequest("the code is unknown, expired or already used")
@@ -209,7 +218,7 @@ func (s *Service) DescribeDevice(ctx context.Context, user oauth.User, userCode 
 	case err != nil:
 		// A storage failure says nothing about the code the user typed:
 		// give the slot back so an outage does not leave them locked out.
-		s.failures.release(user.ID)
+		s.failures.release(key)
 		return oauth.DeviceCode{}, oauth.Client{}, oauth.ServerError(err)
 	}
 	if rec.Consumed || !now.Before(rec.ExpiresAt) {
@@ -217,10 +226,10 @@ func (s *Service) DescribeDevice(ctx context.Context, user oauth.User, userCode 
 	}
 	client, err := s.store.Clients().Get(ctx, rec.ClientID)
 	if err != nil {
-		s.failures.release(user.ID)
+		s.failures.release(key)
 		return oauth.DeviceCode{}, oauth.Client{}, oauth.ServerError(err)
 	}
-	s.failures.release(user.ID)
+	s.failures.release(key)
 	return rec, client, nil
 }
 

@@ -50,9 +50,12 @@ it is RFC-safe. They are proposed here for owner review, not silently shipped.
    users only) shows the requesting client's registered name (or, for a client
    without one, its `client_id` marked as unnamed), the requested scope and the
    code, and offers Approve and Deny. The lookup counts against the same
-   per-user failed-entry limit as a decision (a storage error does not count,
-   and a page request marked `Sec-Fetch-Site: cross-site` or `same-site` gets
-   the plain entry form without any lookup). The decision `POST` must carry
+   per-user failed-entry limit as a decision when the request is marked
+   `Sec-Fetch-Site: same-origin` or `none`. A storage error does not count. A
+   request marked `cross-site` or `same-site` gets the plain entry form without
+   any lookup, and a request without that header is looked up against a
+   separate lookup-only window, so lookups the user did not type cannot use up
+   the budget that guards decisions. The decision `POST` must carry
    the `csrf_token` issued with that page — bound to the session cookie and to
    that user code, valid for 15 minutes — and an `action` of exactly `approve`
    or `deny`; a missing token is `403`, a missing or other `action` is

@@ -661,3 +661,26 @@ func TestDeviceVerifyCrossSiteNavigationDoesNotSpendFailureBudget(t *testing.T) 
 		t.Fatalf("sixth same-origin guess = %d, want 429", rec.Code)
 	}
 }
+
+func TestDeviceVerifyHeaderlessNavigationDoesNotSpendDecisionBudget(t *testing.T) {
+	e := newExtEnv(t, false)
+	d := startDeviceHTTP(t, e)
+	uc := d["user_code"].(string)
+	c := e.login(t)
+
+	for i := 0; i < 10; i++ {
+		e.get("/oauth/device/verify?user_code=BCDF-GHJK", cookie(c))
+	}
+	// A correct lookup and decision still work for the user.
+	e.clock.t = e.clock.t.Add(6 * time.Second)
+	page := e.get("/oauth/device/verify?user_code="+url.QueryEscape(uc), cookie(c), header("Sec-Fetch-Site", "same-origin"))
+	m := csrfField.FindStringSubmatch(page.Body.String())
+	if page.Code != 200 || m == nil {
+		t.Fatalf("same-origin lookup after headerless navigations = %d %s", page.Code, page.Body.String())
+	}
+	e.postForm("/oauth/device/verify", decideBody(uc, "approve", html.UnescapeString(m[1])), cookie(c))
+	e.clock.t = e.clock.t.Add(6 * time.Second)
+	if rec := pollHTTP(e, d["device_code"].(string)); rec.Code != 200 {
+		t.Fatalf("poll after approve = %d %s", rec.Code, rec.Body.String())
+	}
+}

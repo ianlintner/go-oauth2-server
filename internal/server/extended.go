@@ -140,7 +140,11 @@ func (h *oauthHandlers) deviceVerify(w http.ResponseWriter, r *http.Request) {
 			h.renderDevice(w, http.StatusOK, deviceView{})
 			return
 		}
-		rec, client, err := h.svc.DescribeDevice(r.Context(), user, code)
+		// Only a request the browser marks as same-origin (or typed or
+		// bookmarked) is charged to the decision budget; anything without
+		// that metadata uses a separate lookup-only window.
+		site := r.Header.Get("Sec-Fetch-Site")
+		rec, client, err := h.svc.DescribeDevice(r.Context(), user, code, site == "same-origin" || site == "none")
 		if err != nil {
 			h.fail(w, r, err)
 			return

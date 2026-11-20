@@ -105,7 +105,7 @@ func TestDeviceDescribeCountsAgainstTheGuessLimiter(t *testing.T) {
 	d := startDevice(t, e)
 	ctx := context.Background()
 	for i := 0; i < 5; i++ {
-		if _, _, err := e.svc.DescribeDevice(ctx, e.user, "BCDF-GHJK"); err == nil {
+		if _, _, err := e.svc.DescribeDevice(ctx, e.user, "BCDF-GHJK", true); err == nil {
 			t.Fatalf("guess %d unexpectedly described an authorization", i)
 		}
 	}
@@ -114,7 +114,7 @@ func TestDeviceDescribeCountsAgainstTheGuessLimiter(t *testing.T) {
 	if !errors.As(err, &oe) || oe.HTTPStatus() != 429 {
 		t.Fatalf("correct code after exhausted window = %v, want 429", err)
 	}
-	if _, _, err := e.svc.DescribeDevice(ctx, e.user, d.UserCode); err == nil {
+	if _, _, err := e.svc.DescribeDevice(ctx, e.user, d.UserCode, true); err == nil {
 		t.Fatal("describe must be refused once the window is exhausted")
 	}
 }
@@ -125,7 +125,7 @@ func TestDeviceDescribeReturnsClientAndScopeWithoutCounting(t *testing.T) {
 	d := startDevice(t, e)
 	ctx := context.Background()
 	for i := 0; i < 8; i++ {
-		rec, c, err := e.svc.DescribeDevice(ctx, e.user, d.UserCode)
+		rec, c, err := e.svc.DescribeDevice(ctx, e.user, d.UserCode, true)
 		if err != nil {
 			t.Fatalf("describe %d: %v", i, err)
 		}
@@ -169,17 +169,39 @@ func TestDeviceDescribeStorageErrorDoesNotSpendFailureBudget(t *testing.T) {
 
 	down.Store(true)
 	for i := 0; i < 10; i++ {
-		_, _, err := e.svc.DescribeDevice(ctx, e.user, d.UserCode)
+		_, _, err := e.svc.DescribeDevice(ctx, e.user, d.UserCode, true)
 		var oe *oauth.Error
 		if !errors.As(err, &oe) || oe.HTTPStatus() == 429 {
 			t.Fatalf("lookup %d during outage = %v, want a server error that is not rate limiting", i, err)
 		}
 	}
 	down.Store(false)
-	if _, _, err := e.svc.DescribeDevice(ctx, e.user, d.UserCode); err != nil {
+	if _, _, err := e.svc.DescribeDevice(ctx, e.user, d.UserCode, true); err != nil {
 		t.Fatalf("lookup after recovery: %v", err)
 	}
 	if err := e.svc.DecideDevice(ctx, e.user, d.UserCode, true); err != nil {
 		t.Fatalf("decide after recovery: %v", err)
+	}
+}
+
+func TestDeviceDescribeWithoutIntentUsesSeparateBudget(t *testing.T) {
+	e := newEnv(t)
+	addDeviceClients(t, e)
+	d := startDevice(t, e)
+	ctx := context.Background()
+	for i := 0; i < 5; i++ {
+		if _, _, err := e.svc.DescribeDevice(ctx, e.user, "BCDF-GHJK", false); err == nil {
+			t.Fatalf("guess %d unexpectedly described an authorization", i)
+		}
+	}
+	// Lookups without established intent are still limited ...
+	_, _, err := e.svc.DescribeDevice(ctx, e.user, d.UserCode, false)
+	var oe *oauth.Error
+	if !errors.As(err, &oe) || oe.HTTPStatus() != 429 {
+		t.Fatalf("describe after exhausted lookup window = %v, want 429", err)
+	}
+	// ... but cannot lock out the decision.
+	if err := e.svc.DecideDevice(ctx, e.user, d.UserCode, true); err != nil {
+		t.Fatalf("decide after unintended lookups: %v", err)
 	}
 }
