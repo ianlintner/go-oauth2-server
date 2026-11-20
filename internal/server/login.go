@@ -4,6 +4,7 @@ import (
 	"errors"
 	"html/template"
 	"io"
+	"net"
 	"net/http"
 
 	"github.com/ianlintner/go-oauth2-server/internal/authcode"
@@ -73,8 +74,18 @@ func (h *oauthHandlers) loginSubmit(w http.ResponseWriter, r *http.Request) {
 	}
 	rq := h.sanitizeReturnQuery(p.Get("return_query"))
 
-	user, err := h.svc.AuthenticateUser(r.Context(), p.Get("username"), p.Get("password"))
+	// The source is the connection's peer address only: no forwarded header
+	// is trusted to identify the caller.
+	source, _, splitErr := net.SplitHostPort(r.RemoteAddr)
+	if splitErr != nil {
+		source = r.RemoteAddr
+	}
+	user, err := h.svc.AuthenticateUserFrom(r.Context(), source, p.Get("username"), p.Get("password"))
+	var oe *oauth.Error
 	switch {
+	case errors.As(err, &oe) && oe.Code == oauth.CodeTemporarilyUnavailable:
+		h.renderLogin(w, http.StatusTooManyRequests, rq, "Too many attempts. Try again later.")
+		return
 	case errors.Is(err, authcode.ErrInvalidCredentials):
 		h.renderLogin(w, http.StatusForbidden, rq, "Invalid username or password.")
 		return

@@ -48,6 +48,16 @@ OAUTH2_SESSION_SECRET="$(openssl rand -base64 32)" \
 
 Configuration is read from the environment; see `internal/config` for every variable and its validation. `OAUTH2_ENVIRONMENT` selects the validation profile (`development`, `test` or `production`). **When it is unset or empty the server runs as `production`**, so relaxed behavior (http issuer, in-memory storage, insecure redirects, conformance mode) requires an explicit `development` or `test` value; deployments that relied on the former implicit `development` default must now set it. `OAUTH2_STORAGE_DSN` defaults to `:memory:` outside production and is refused in production; a `postgres://` URL selects the pgx adapter, and in production it must carry `sslmode=require`, `verify-ca` or `verify-full`. The signing key must be an RSA key of at least 2048 bits, and its file must not be accessible by group or other (for example mode `0600`; not checked on Windows). HTTP server limits are configurable with `OAUTH2_READ_TIMEOUT` (default `30s`), `OAUTH2_WRITE_TIMEOUT` (`60s`), `OAUTH2_IDLE_TIMEOUT` (`120s`) and `OAUTH2_MAX_HEADER_BYTES` (`32768`); raise them deliberately when running behind a slow proxy. `OAUTH2_METRICS_ENABLED=true` enables `/metrics` on the same listener; restrict scraper access at the network edge. The resource-owner login form is present only under `OAUTH2_CONFORMANCE_MODE=1`.
 
+### Request throttling
+
+Password-hash work is bounded in-process:
+
+- `OAUTH2_MAX_CONCURRENT_HASHES` caps concurrent argon2id computations (default: one per CPU). A request that cannot take a slot immediately is answered `429` with `{"error":"temporarily_unavailable"}`; nothing is queued.
+- `OAUTH2_AUTH_FAILURES_PER_MINUTE` (default `10`) caps failed authentications per presented client id (token, introspection, revocation and PAR endpoints) and per presented username at `/auth/login`; login also has a per-source budget (5× the value) keyed on the connection's peer address only, never a forwarded header. Over-budget keys get the same `429` before any hash is computed, whether or not the id exists. Successful authentications do not consume budget.
+- A negative value disables the corresponding limit. Conformance mode defaults both to disabled unless set.
+
+The limiters are per process: with several replicas the effective budgets multiply by the replica count. Clients that previously saw `401 invalid_client` for a burst of failures now see `429 temporarily_unavailable` once over budget.
+
 ## Building and testing
 
 ```sh

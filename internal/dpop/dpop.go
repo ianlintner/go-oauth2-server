@@ -128,7 +128,7 @@ func (v *Verifier) Verify(_ context.Context, req Request) (string, error) {
 	if req.Proof == "" || len(req.Proof) > maxProofBytes {
 		return "", invalid("missing or oversized proof")
 	}
-	jws, err := jose.ParseSigned(req.Proof, SigningAlgs)
+	jws, err := jose.ParseSignedCompact(req.Proof, SigningAlgs)
 	if err != nil || len(jws.Signatures) != 1 {
 		return "", invalid("not a compact JWS with an allowed algorithm")
 	}

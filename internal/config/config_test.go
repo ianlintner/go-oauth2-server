@@ -339,3 +339,20 @@ func mustJSON(t *testing.T, v any) string {
 	}
 	return string(b)
 }
+
+func TestThrottlingSettings(t *testing.T) {
+	m := baseEnv(t)
+	cfg, err := config.Load(env(m))
+	if err != nil || cfg.MaxConcurrentHashes != 0 || cfg.AuthFailureLimit != 0 {
+		t.Fatalf("defaults: cfg = %+v, err = %v", cfg, err)
+	}
+	m["OAUTH2_MAX_CONCURRENT_HASHES"] = "3"
+	m["OAUTH2_AUTH_FAILURES_PER_MINUTE"] = "7"
+	if cfg, err = config.Load(env(m)); err != nil || cfg.MaxConcurrentHashes != 3 || cfg.AuthFailureLimit != 7 {
+		t.Fatalf("explicit: cfg = %+v, err = %v", cfg, err)
+	}
+	m["OAUTH2_MAX_CONCURRENT_HASHES"] = "many"
+	if _, err = config.Load(env(m)); err == nil {
+		t.Fatal("a non-integer limit must be refused")
+	}
+}
