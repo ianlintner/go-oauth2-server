@@ -398,6 +398,10 @@ func TestRevokeStillAcceptsPublicClient(t *testing.T) {
 	if rec.Code != http.StatusOK {
 		t.Fatalf("status = %d %q, want 200", rec.Code, rec.Body.String())
 	}
+	// Revocation answers 200 for unknown tokens too, so confirm the effect.
+	if _, err := e.tokens.VerifyAccessToken(context.Background(), at.Value); err == nil {
+		t.Fatal("token still verifies after revocation by its public client")
+	}
 }
 
 func TestMetadataDoesNotAdvertiseNoneForIntrospection(t *testing.T) {

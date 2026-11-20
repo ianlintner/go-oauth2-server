@@ -97,6 +97,17 @@ func TestUserInfoRefusesClientCredentialsSubject(t *testing.T) {
 	}
 }
 
+// A machine token that already carries openid (issued before the grant refused
+// it) must still not yield a client id as the subject.
+func TestUserInfoRefusesMachineTokenCarryingOpenid(t *testing.T) {
+	e := newTokenEnv(t)
+	at := e.issueAccessTokenScope(t, "client-cc", "client-cc", "openid")
+	rec := e.get("/oauth/userinfo", bearerAuth(at.Value))
+	if rec.Code != http.StatusForbidden || !strings.Contains(rec.Header().Get("WWW-Authenticate"), `error="insufficient_scope"`) {
+		t.Fatalf("status = %d %q %q, want 403 insufficient_scope", rec.Code, rec.Header().Get("WWW-Authenticate"), rec.Body.String())
+	}
+}
+
 func TestUserInfoRequiresOpenidScope(t *testing.T) {
 	e := newTokenEnv(t)
 	at := e.issueAccessToken(t, "client-a", "user-1")

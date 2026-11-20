@@ -94,6 +94,20 @@ func (h *oauthHandlers) userinfo(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// A token whose subject is its own client was issued to a machine client
+	// (RFC 9068 §2.2), including tokens issued before the client credentials
+	// grant refused openid. It never names a user, so it is refused with the
+	// same scope challenge rather than returning a client id as a subject.
+	if verified.Subject == verified.ClientID {
+		if dpopScheme {
+			w.Header().Set("WWW-Authenticate", `DPoP error="insufficient_scope", scope="openid"`)
+		} else {
+			w.Header().Set("WWW-Authenticate", `Bearer error="insufficient_scope", scope="openid"`)
+		}
+		writeBearerError(w, http.StatusForbidden, "insufficient_scope")
+		return
+	}
+
 	body := map[string]any{
 		"sub": verified.Subject,
 	}
