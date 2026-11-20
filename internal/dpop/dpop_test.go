@@ -385,3 +385,33 @@ func TestWithTokenEndpointProofStillBurnsNoJTIOnRejectedProof(t *testing.T) {
 		t.Fatalf("record after rejected proof: %v", err)
 	}
 }
+
+func TestRecordRejectsProofWhoseWindowClosedAfterCheck(t *testing.T) {
+	now := time.Unix(1_800_000_000, 0)
+	v, clk := newVerifier(now)
+	k := newKey(t)
+	proof := proofSpec{jti: "j1"}.sign(t, now, k)
+	req := dpop.Request{Proof: proof, Method: "POST", URL: tokenURL}
+	c, err := v.Check(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Authentication takes longer than the freshness window.
+	clk.t = now.Add(dpop.DefaultMaxAge + dpop.DefaultFutureSkew + time.Second)
+	if err := v.Record(c); !errors.Is(err, dpop.ErrInvalidProof) {
+		t.Fatalf("record after window = %v, want ErrInvalidProof", err)
+	}
+	if _, err := v.Check(req); !errors.Is(err, dpop.ErrInvalidProof) {
+		t.Fatalf("check after window = %v, want ErrInvalidProof", err)
+	}
+}
+
+func TestMemoryReplayStoreRejectsElapsedExpiry(t *testing.T) {
+	now := time.Unix(1_800_000_000, 0)
+	clk := &fixedClock{t: now}
+	store := dpop.NewMemoryReplayStore(clk, 10)
+	ok, err := store.Add("k", now)
+	if ok || !errors.Is(err, dpop.ErrInvalidProof) {
+		t.Fatalf("Add with elapsed expiry = %v, %v; want false, ErrInvalidProof", ok, err)
+	}
+}

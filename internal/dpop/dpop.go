@@ -222,6 +222,12 @@ func (v *Verifier) Check(req Request) (Checked, error) {
 // ErrReplayStoreFull when the store cannot take another entry, and an
 // ErrInvalidProof error when the proof was already used.
 func (v *Verifier) Record(c Checked) error {
+	// The proof was fresh at Check; client authentication may have taken long
+	// enough for its window to close. A store that cannot detect replays past
+	// the entry's expiry must not be asked to record it.
+	if !v.clock.Now().Before(c.expires) {
+		return invalid("proof expired before it was recorded")
+	}
 	fresh, err := v.replay.Add(c.replayKey, c.expires)
 	if err != nil {
 		return err
@@ -279,6 +285,13 @@ func (s *MemoryReplayStore) Add(key string, expires time.Time) (bool, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	now := s.clock.Now()
+	// An entry that is already past its expiry cannot detect a replay: it
+	// would read as absent on the next call. Refuse it under the same lock as
+	// the insert, so a proof checked while fresh but recorded after its window
+	// closed is rejected rather than accepted.
+	if !now.Before(expires) {
+		return false, invalid("proof expired before it was recorded")
+	}
 	if exp, ok := s.entries[key]; ok && now.Before(exp) {
 		return false, nil
 	}
