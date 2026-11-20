@@ -484,9 +484,6 @@ func (s *Service) refreshToken(ctx context.Context, client oauth.Client, p oauth
 	if rec.ClientID != client.ID {
 		return TokenResponse{}, oauth.InvalidGrant("refresh token was not issued to this client")
 	}
-	if !s.clock.Now().Before(rec.ExpiresAt) {
-		return TokenResponse{}, oauth.InvalidGrant("refresh token is invalid or expired")
-	}
 
 	// A family has a fixed maximum age counted from its first token; past it
 	// the family is revoked and the client must authorize again. Records
@@ -500,6 +497,12 @@ func (s *Service) refreshToken(ctx context.Context, client oauth.Client, p oauth
 		if _, err := s.store.RefreshTokens().RevokeFamily(ctx, rec.FamilyID, s.clock.Now()); err != nil {
 			return TokenResponse{}, oauth.ServerError(err)
 		}
+		return TokenResponse{}, oauth.InvalidGrant("refresh token is invalid or expired")
+	}
+	// The per-token lifetime is checked after the family cap, because issuance
+	// clamps a token's expiry to the cap: checking it first would turn a
+	// rotation at the deadline into a plain expiry that leaves the family live.
+	if !s.clock.Now().Before(rec.ExpiresAt) {
 		return TokenResponse{}, oauth.InvalidGrant("refresh token is invalid or expired")
 	}
 

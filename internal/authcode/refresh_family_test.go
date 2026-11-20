@@ -146,3 +146,85 @@ func TestCodeGrantStillIssuesRefreshTokenForRegisteredClient(t *testing.T) {
 		t.Fatalf("rotation: %v", err)
 	}
 }
+
+// A token issued normally has its expiry clamped to the family deadline, so a
+// rotation exactly at the deadline must still revoke the whole family.
+func TestRefreshAtFamilyDeadlineRevokesFamily(t *testing.T) {
+	e := newEnvWith(t, func(c *authcode.Config) {
+		c.MaxConcurrentHashes = -1
+		c.MaxRefreshFamilyAge = 90 * day
+	})
+	auth := basic("client-a", "test-only-secret")
+	ctx := context.Background()
+
+	first, err := e.token(auth, codeParams(t, e.issue(t, "client-a", callback)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	last := first
+	for _, step := range []time.Duration{25 * day, 25 * day, 25 * day} { // days 25, 50, 75
+		e.clock.Advance(step)
+		if last, err = e.token(auth, refreshParams(t, last.RefreshToken)); err != nil {
+			t.Fatalf("rotation: %v", err)
+		}
+	}
+	e.clock.Advance(15 * day) // day 90: exactly the deadline
+	_, err = e.token(auth, refreshParams(t, last.RefreshToken))
+	wantCode(t, err, oauth.CodeInvalidGrant)
+
+	// Stored state: the family is revoked, not merely refused.
+	rec, err := e.store.RefreshTokens().GetByHash(ctx, hashTokenHex(last.RefreshToken))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := e.store.RefreshTokens().Rotate(ctx, hashTokenHex(last.RefreshToken), e.clock.Now()); !errors.Is(err, oauth.ErrAlreadyConsumed) {
+		t.Fatalf("Rotate after deadline = %v (family %s), want ErrAlreadyConsumed", err, rec.FamilyID)
+	}
+}
+
+// Rows without a recorded family start (unknown, 0) fall back to the presented
+// token's own issue time; the derived start is then carried forward, so later
+// rotations cannot push the family out any further.
+func TestLegacyFamilyStartIsCarriedAndNotExtended(t *testing.T) {
+	e := newEnvWith(t, func(c *authcode.Config) {
+		c.MaxConcurrentHashes = -1
+		c.MaxRefreshFamilyAge = 90 * day
+	})
+	auth := basic("client-a", "test-only-secret")
+	ctx := context.Background()
+	now := e.clock.Now()
+
+	// Issued 20 days ago with the default 30-day token lifetime.
+	err := e.store.RefreshTokens().Create(ctx, oauth.RefreshToken{
+		TokenHash: hashTokenHex("legacy-1"), FamilyID: "fam-legacy", ClientID: "client-a", UserID: "user-1",
+		Scope: "openid", ExpiresAt: now.Add(10 * day),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	derived := now.Add(-20 * day)
+	cur, err := e.token(auth, refreshParams(t, "legacy-1"))
+	if err != nil {
+		t.Fatalf("rotation: %v", err)
+	}
+	for i := 0; i < 2; i++ {
+		r, err := e.store.RefreshTokens().GetByHash(ctx, hashTokenHex(cur.RefreshToken))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !r.FamilyCreatedAt.Equal(derived) {
+			t.Fatalf("FamilyCreatedAt = %v, want %v", r.FamilyCreatedAt, derived)
+		}
+		if limit := derived.Add(90 * day); r.ExpiresAt.After(limit) {
+			t.Fatalf("ExpiresAt %v is past %v", r.ExpiresAt, limit)
+		}
+		e.clock.Advance(25 * day)
+		if cur, err = e.token(auth, refreshParams(t, cur.RefreshToken)); err != nil {
+			t.Fatalf("rotation %d: %v", i+2, err)
+		}
+	}
+	// Day 70 of the family from derived start is now+50d; advance past it.
+	e.clock.Advance(25 * day)
+	_, err = e.token(auth, refreshParams(t, cur.RefreshToken))
+	wantCode(t, err, oauth.CodeInvalidGrant)
+}
