@@ -424,3 +424,28 @@ func TestDiscoveryAdvertisesTokenExchange(t *testing.T) {
 		}
 	}
 }
+
+func TestExchangeInheritedAudienceMustBeRegisteredForTheExchangingClient(t *testing.T) {
+	e := newExchangeEnv(t)
+	h, _ := secret.Hash(oauth.CryptoRandom{}, exSecret)
+	for _, c := range []oauth.Client{
+		{ID: "svc-issuer", SecretHash: h, AuthMethod: "client_secret_basic", GrantTypes: []string{"client_credentials"},
+			Scopes: []string{"read"}, Resources: []string{resA, resB}, AllowedActors: []string{"svc-other-res"}},
+		{ID: "svc-other-res", SecretHash: h, AuthMethod: "client_secret_basic", GrantTypes: []string{grantExchange},
+			Scopes: []string{"read"}, Resources: []string{resB}},
+	} {
+		if err := e.store.Clients().Create(context.Background(), c); err != nil {
+			t.Fatal(err)
+		}
+	}
+	subject := e.cc(t, "svc-issuer", "read", resA)
+	// Inheriting resA, which the exchanging client is not registered for, fails.
+	code, body := e.exchange(t, "svc-other-res", with(subj(subject), "scope", "read"))
+	wantErr(t, code, body, http.StatusBadRequest, "invalid_target")
+	// A subject audience the exchanging client is registered for still inherits.
+	subjectB := e.cc(t, "svc-issuer", "read", resB)
+	ok := e.mustExchange(t, "svc-other-res", with(subj(subjectB), "scope", "read"))
+	if in := e.introspectAs(t, "svc-other-res", ok["access_token"].(string)); in["aud"] != resB {
+		t.Fatalf("aud = %v, want %s", in["aud"], resB)
+	}
+}

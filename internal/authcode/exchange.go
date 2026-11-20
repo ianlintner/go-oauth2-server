@@ -219,7 +219,15 @@ func (s *Service) exchangeAudience(client oauth.Client, subject token.VerifiedTo
 		requested = append(requested, v)
 	}
 	if len(requested) == 0 {
-		return append([]string(nil), subject.Audience...), nil
+		// An inherited audience is still a target: the exchanging client's
+		// own registration must permit every one of them.
+		inherited := append([]string(nil), subject.Audience...)
+		for _, v := range inherited {
+			if _, err := s.validateResource(client, v); err != nil {
+				return nil, err
+			}
+		}
+		return inherited, nil
 	}
 	for _, v := range requested {
 		if _, err := s.validateResource(client, v); err != nil {
