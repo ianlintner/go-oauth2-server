@@ -13,13 +13,13 @@ import (
 // RFC 8693 token exchange.
 const (
 	// GrantTokenExchange is the RFC 8693 §2.1 grant type.
-	GrantTokenExchange = "urn:ietf:params:oauth:grant-type:token-exchange"
+	GrantTokenExchange = "urn:ietf:params:oauth:grant-type:token-exchange" // #nosec G101 -- public RFC 8693 URN, not a credential
 
 	// TokenTypeAccessToken and TokenTypeJWT are the RFC 8693 §3 token-type
 	// identifiers this server accepts as subject/actor token types and
 	// issues. Every access token is a JWT, so both name the same artifact.
-	TokenTypeAccessToken = "urn:ietf:params:oauth:token-type:access_token"
-	TokenTypeJWT         = "urn:ietf:params:oauth:token-type:jwt"
+	TokenTypeAccessToken = "urn:ietf:params:oauth:token-type:access_token" // #nosec G101 -- public RFC 8693 URN, not a credential
+	TokenTypeJWT         = "urn:ietf:params:oauth:token-type:jwt"          // #nosec G101 -- public RFC 8693 URN, not a credential
 
 	// DefaultMaxDelegationDepth is the deepest act chain an exchange may
 	// mint, matching the reference implementation's default.
