@@ -344,3 +344,44 @@ func TestThumbprintOfCnfMatchesProofKey(t *testing.T) {
 		t.Fatalf("jkt mismatch: %s vs %s", k.jkt(t), want)
 	}
 }
+
+func TestCheckDoesNotTouchTheReplayStoreUntilRecorded(t *testing.T) {
+	now := time.Unix(1_800_000_000, 0)
+	v, _ := newVerifier(now)
+	k := newKey(t)
+	proof := proofSpec{jti: "j1"}.sign(t, now, k)
+	req := dpop.Request{Proof: proof, Method: "POST", URL: tokenURL}
+	for i := 0; i < 2; i++ {
+		if _, err := v.Check(req); err != nil {
+			t.Fatalf("check %d: %v", i, err)
+		}
+	}
+	c, err := v.Check(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := v.Record(c); err != nil {
+		t.Fatalf("first record: %v", err)
+	}
+	if err := v.Record(c); !errors.Is(err, dpop.ErrInvalidProof) {
+		t.Fatalf("second record = %v, want ErrInvalidProof", err)
+	}
+}
+
+func TestWithTokenEndpointProofStillBurnsNoJTIOnRejectedProof(t *testing.T) {
+	now := time.Unix(1_800_000_000, 0)
+	v, _ := newVerifier(now)
+	k := newKey(t)
+	bad := proofSpec{jti: "j1", htm: "GET"}.sign(t, now, k)
+	if _, err := v.Check(dpop.Request{Proof: bad, Method: "POST", URL: tokenURL}); err == nil {
+		t.Fatal("expected rejection")
+	}
+	good := proofSpec{jti: "j1"}.sign(t, now, k)
+	c, err := v.Check(dpop.Request{Proof: good, Method: "POST", URL: tokenURL})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := v.Record(c); err != nil {
+		t.Fatalf("record after rejected proof: %v", err)
+	}
+}
