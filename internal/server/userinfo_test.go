@@ -1,9 +1,12 @@
 package server_test
 
 import (
+	"context"
 	"net/http"
 	"strings"
 	"testing"
+
+	"github.com/ianlintner/go-oauth2-server/internal/token"
 )
 
 // The /oauth/userinfo endpoint is the profile's protected resource (RFC 6750).
@@ -119,5 +122,25 @@ func TestUserInfoRequiresOpenidScope(t *testing.T) {
 	rec = e.get("/oauth/userinfo", bearerAuth(ok.Value))
 	if rec.Code != http.StatusOK || jsonBody(t, rec)["sub"] != "user-1" {
 		t.Fatalf("status = %d %q", rec.Code, rec.Body.String())
+	}
+}
+
+// A token issued for a user whose id equals the client id is still a user
+// token when issuance recorded the delegation.
+func TestUserInfoAcceptsDelegatedTokenWithMatchingIDs(t *testing.T) {
+	e := newTokenEnv(t)
+	at, err := e.tokens.Issue(context.Background(), token.IssueParams{ClientID: "client-a", Subject: "client-a", Scope: "openid", Audience: []string{issuer}, UserDelegated: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	rec := e.get("/oauth/userinfo", bearerAuth(at.Value))
+	if rec.Code != http.StatusOK || jsonBody(t, rec)["sub"] != "client-a" {
+		t.Fatalf("status = %d %q, want 200 sub=client-a", rec.Code, rec.Body.String())
+	}
+	// The same shape without the delegation record stays refused.
+	legacy := e.issueAccessTokenScope(t, "client-a", "client-a", "openid")
+	rec = e.get("/oauth/userinfo", bearerAuth(legacy.Value))
+	if rec.Code != http.StatusForbidden {
+		t.Fatalf("legacy status = %d, want 403", rec.Code)
 	}
 }

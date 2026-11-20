@@ -94,11 +94,12 @@ func (h *oauthHandlers) userinfo(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// A token whose subject is its own client was issued to a machine client
-	// (RFC 9068 §2.2), including tokens issued before the client credentials
-	// grant refused openid. It never names a user, so it is refused with the
-	// same scope challenge rather than returning a client id as a subject.
-	if verified.Subject == verified.ClientID {
+	// A token recorded as user-delegated at issuance names a user, even when
+	// the user id equals the client id. A token without that record may be a
+	// machine token (RFC 9068 §2.2) issued before the client credentials grant
+	// refused openid; when its subject is its own client it is refused with
+	// the same scope challenge rather than returning a client id as a subject.
+	if !verified.UserDelegated && verified.Subject == verified.ClientID {
 		if dpopScheme {
 			w.Header().Set("WWW-Authenticate", `DPoP error="insufficient_scope", scope="openid"`)
 		} else {
