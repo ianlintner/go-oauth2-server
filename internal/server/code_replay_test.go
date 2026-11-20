@@ -88,13 +88,80 @@ func TestCodeReplayRevokesRotatedRefreshDescendants(t *testing.T) {
 		t.Fatalf("rotation = %d %q", second.Code, second.Body.String())
 	}
 	rt2, _ := jsonBody(t, second)["refresh_token"].(string)
+	if rt2 == "" || rt2 == rt1 {
+		t.Fatalf("rotation returned no distinct replacement refresh token: %q", second.Body.String())
+	}
 
-	if r := e.postForm("/oauth/token", codeForm(c), auth); r.Code != http.StatusBadRequest {
-		t.Fatalf("replay = %d", r.Code)
+	if r := e.postForm("/oauth/token", codeForm(c), auth); r.Code != http.StatusBadRequest || jsonBody(t, r)["error"] != "invalid_grant" {
+		t.Fatalf("replay = %d %q, want 400 invalid_grant", r.Code, r.Body.String())
 	}
 	ref := e.postForm("/oauth/token", "grant_type=refresh_token&refresh_token="+rt2, auth)
-	if ref.Code != http.StatusBadRequest {
-		t.Fatalf("rotated descendant still live after code replay: %d %q", ref.Code, ref.Body.String())
+	if ref.Code != http.StatusBadRequest || jsonBody(t, ref)["error"] != "invalid_grant" {
+		t.Fatalf("rotated descendant after code replay = %d %q, want 400 invalid_grant", ref.Code, ref.Body.String())
+	}
+}
+
+// hookedStore runs onAccessTokenCreate immediately before the access token row
+// is inserted, so a test can interleave a replay at exactly that point.
+type hookedStore struct {
+	oauth.Store
+	onAccessTokenCreate func()
+}
+
+func (h *hookedStore) AccessTokens() oauth.AccessTokenRepository {
+	return &hookedAccessTokens{AccessTokenRepository: h.Store.AccessTokens(), hook: h.onAccessTokenCreate}
+}
+
+type hookedAccessTokens struct {
+	oauth.AccessTokenRepository
+	hook func()
+}
+
+func (h *hookedAccessTokens) Create(ctx context.Context, t oauth.AccessToken) error {
+	if h.hook != nil {
+		h.hook()
+	}
+	return h.AccessTokenRepository.Create(ctx, t)
+}
+
+// A replay that lands after the code was consumed but before the access token
+// row is persisted must still leave no active access token.
+func TestCodeReplayDuringIssuanceLeavesNoActiveAccessToken(t *testing.T) {
+	var hs *hookedStore
+	e := newTokenEnvWrapped(t, func(s oauth.Store) oauth.Store {
+		hs = &hookedStore{Store: s}
+		return hs
+	})
+	auth := basic("client-rt", "rt-test-secret")
+	c := e.authorizeCode(t, "client-rt")
+
+	replays := 0
+	hs.onAccessTokenCreate = func() {
+		replays++
+		hs.onAccessTokenCreate = nil // only the first (redeeming) issuance is interleaved
+		r := e.postForm("/oauth/token", codeForm(c), auth)
+		if r.Code != http.StatusBadRequest || jsonBody(t, r)["error"] != "invalid_grant" {
+			t.Errorf("interleaved replay = %d %q, want 400 invalid_grant", r.Code, r.Body.String())
+		}
+	}
+	first := e.postForm("/oauth/token", codeForm(c), auth)
+	if replays != 1 {
+		t.Fatalf("replay hook ran %d times, want 1", replays)
+	}
+	if first.Code != http.StatusOK {
+		t.Fatalf("redemption = %d %q", first.Code, first.Body.String())
+	}
+	body := jsonBody(t, first)
+	at, _ := body["access_token"].(string)
+	rt, _ := body["refresh_token"].(string)
+	if at == "" || rt == "" {
+		t.Fatalf("token body = %v", body)
+	}
+	if e.introspectActive(t, at) {
+		t.Fatal("access token issued concurrently with a code replay is still active")
+	}
+	if r := e.postForm("/oauth/token", "grant_type=refresh_token&refresh_token="+rt, auth); r.Code != http.StatusBadRequest {
+		t.Fatalf("refresh token issued concurrently with a code replay is still live: %d", r.Code)
 	}
 }
 

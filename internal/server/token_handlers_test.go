@@ -29,7 +29,12 @@ type tokenEnv struct {
 	tokens *token.Service
 }
 
-func newTokenEnv(t *testing.T) *tokenEnv {
+func newTokenEnv(t *testing.T) *tokenEnv { return newTokenEnvWrapped(t, nil) }
+
+// newTokenEnvWrapped is newTokenEnv with the store the services see optionally
+// wrapped (to inject a hook at a precise point); the env's own store stays
+// the raw one.
+func newTokenEnvWrapped(t *testing.T, wrap func(oauth.Store) oauth.Store) *tokenEnv {
 	t.Helper()
 	st, err := sqlite.Open(sqlite.MemoryDSN)
 	if err != nil {
@@ -59,6 +64,10 @@ func newTokenEnv(t *testing.T) *tokenEnv {
 		}
 	}
 	clk := &hClock{t: time.Unix(1_700_000_000, 0).UTC()}
+	var svcStore oauth.Store = st
+	if wrap != nil {
+		svcStore = wrap(st)
+	}
 
 	key, err := rsa.GenerateKey(rand.Reader, 2048)
 	if err != nil {
@@ -75,7 +84,7 @@ func newTokenEnv(t *testing.T) *tokenEnv {
 		Signer:   signer,
 		Verifier: verifier,
 		Keys:     ks,
-		Store:    st,
+		Store:    svcStore,
 		Clock:    clk,
 		Random:   rnd,
 	})
@@ -83,7 +92,7 @@ func newTokenEnv(t *testing.T) *tokenEnv {
 		t.Fatal(err)
 	}
 
-	svc, err := authcode.New(authcode.Config{Store: st, Clock: clk, Random: rnd, Tokens: tokens})
+	svc, err := authcode.New(authcode.Config{Store: svcStore, Clock: clk, Random: rnd, Tokens: tokens})
 	if err != nil {
 		t.Fatal(err)
 	}
