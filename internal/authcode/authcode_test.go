@@ -75,6 +75,7 @@ func newEnvWith(t *testing.T, mod func(*authcode.Config)) *env {
 		{ID: "client-enc", SecretHash: hash("p@ss:w+rd %"), AuthMethod: "client_secret_basic", RedirectURIs: []string{callback}, GrantTypes: []string{"authorization_code", "client_credentials"}},
 		{ID: "client-public", Public: true, AuthMethod: "none", RedirectURIs: []string{callback}, GrantTypes: []string{"authorization_code"}},
 		{ID: "client-loop", Public: true, AuthMethod: "none", RedirectURIs: []string{"http://127.0.0.1/cb"}, GrantTypes: []string{"authorization_code"}},
+		{ID: "client-codeonly", SecretHash: hash("codeonly-secret"), AuthMethod: "client_secret_basic", RedirectURIs: []string{callback}, GrantTypes: []string{"authorization_code"}},
 		{ID: "client-nogrants", Public: true, AuthMethod: "none", RedirectURIs: []string{callback}},
 		{ID: "client-scoped", Public: true, AuthMethod: "none", RedirectURIs: []string{callback}, Scopes: []string{"read", "write"}, GrantTypes: []string{"authorization_code"}},
 	}

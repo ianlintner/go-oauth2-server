@@ -35,6 +35,22 @@ func decodeList(s string) ([]string, error) {
 func nanos(t time.Time) int64     { return t.UTC().UnixNano() }
 func fromNanos(n int64) time.Time { return time.Unix(0, n).UTC() }
 
+// nanosOrZero stores an unset time as 0 (time.Time{} has no UnixNano) and
+// fromNanosOrZero reverses it.
+func nanosOrZero(t time.Time) int64 {
+	if t.IsZero() {
+		return 0
+	}
+	return nanos(t)
+}
+
+func fromNanosOrZero(n int64) time.Time {
+	if n == 0 {
+		return time.Time{}
+	}
+	return fromNanos(n)
+}
+
 // --- clients ---
 
 type clientRepo struct{ db execer }
@@ -181,9 +197,9 @@ type refreshRepo struct{ db execer }
 
 func (r *refreshRepo) Create(ctx context.Context, t oauth.RefreshToken) error {
 	_, err := r.db.ExecContext(ctx,
-		`INSERT INTO refresh_tokens (token_hash, family_id, client_id, user_id, scope, audience, expires_at)
-		 VALUES (?, ?, ?, ?, ?, ?, ?)`,
-		t.TokenHash, t.FamilyID, t.ClientID, t.UserID, t.Scope, t.Audience, nanos(t.ExpiresAt))
+		`INSERT INTO refresh_tokens (token_hash, family_id, client_id, user_id, scope, audience, expires_at, family_created_at)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+		t.TokenHash, t.FamilyID, t.ClientID, t.UserID, t.Scope, t.Audience, nanos(t.ExpiresAt), nanosOrZero(t.FamilyCreatedAt))
 	return createErr(err)
 }
 
@@ -193,13 +209,13 @@ func (r *refreshRepo) Create(ctx context.Context, t oauth.RefreshToken) error {
 // record).
 func (r *refreshRepo) GetByHash(ctx context.Context, tokenHash string) (oauth.RefreshToken, error) {
 	var (
-		t       oauth.RefreshToken
-		expires int64
+		t                      oauth.RefreshToken
+		expires, familyCreated int64
 	)
 	err := r.db.QueryRowContext(ctx,
-		`SELECT token_hash, family_id, client_id, user_id, scope, audience, expires_at
+		`SELECT token_hash, family_id, client_id, user_id, scope, audience, expires_at, family_created_at
 		 FROM refresh_tokens WHERE token_hash = ?`, tokenHash).
-		Scan(&t.TokenHash, &t.FamilyID, &t.ClientID, &t.UserID, &t.Scope, &t.Audience, &expires)
+		Scan(&t.TokenHash, &t.FamilyID, &t.ClientID, &t.UserID, &t.Scope, &t.Audience, &expires, &familyCreated)
 	if errors.Is(err, sql.ErrNoRows) {
 		return oauth.RefreshToken{}, oauth.ErrNotFound
 	}
@@ -207,6 +223,7 @@ func (r *refreshRepo) GetByHash(ctx context.Context, tokenHash string) (oauth.Re
 		return oauth.RefreshToken{}, err
 	}
 	t.ExpiresAt = fromNanos(expires)
+	t.FamilyCreatedAt = fromNanosOrZero(familyCreated)
 	return t, nil
 }
 
@@ -216,16 +233,16 @@ func (r *refreshRepo) GetByHash(ctx context.Context, tokenHash string) (oauth.Re
 // arrival.
 func (r *refreshRepo) Rotate(ctx context.Context, tokenHash string, now time.Time) (oauth.RefreshToken, error) {
 	var (
-		t       oauth.RefreshToken
-		expires int64
+		t                      oauth.RefreshToken
+		expires, familyCreated int64
 	)
 	err := r.db.QueryRowContext(ctx,
 		`UPDATE refresh_tokens SET rotated_at = ?
 		 WHERE token_hash = ? AND rotated_at IS NULL
 		   AND NOT EXISTS (SELECT 1 FROM refresh_families f WHERE f.family_id = refresh_tokens.family_id)
-		 RETURNING token_hash, family_id, client_id, user_id, scope, audience, expires_at`,
+		 RETURNING token_hash, family_id, client_id, user_id, scope, audience, expires_at, family_created_at`,
 		nanos(now), tokenHash).
-		Scan(&t.TokenHash, &t.FamilyID, &t.ClientID, &t.UserID, &t.Scope, &t.Audience, &expires)
+		Scan(&t.TokenHash, &t.FamilyID, &t.ClientID, &t.UserID, &t.Scope, &t.Audience, &expires, &familyCreated)
 	if errors.Is(err, sql.ErrNoRows) {
 		return oauth.RefreshToken{}, missOrConsumed(ctx, r.db, `SELECT 1 FROM refresh_tokens WHERE token_hash = ?`, tokenHash)
 	}
@@ -233,6 +250,7 @@ func (r *refreshRepo) Rotate(ctx context.Context, tokenHash string, now time.Tim
 		return oauth.RefreshToken{}, err
 	}
 	t.ExpiresAt = fromNanos(expires)
+	t.FamilyCreatedAt = fromNanosOrZero(familyCreated)
 	return t, nil
 }
 
