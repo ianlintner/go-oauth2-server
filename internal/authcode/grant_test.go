@@ -179,3 +179,49 @@ func TestReplayedCodeWithFailingRevocationFailsClosed(t *testing.T) {
 		t.Fatalf("replay with failing revocation = %q, want server_error", got)
 	}
 }
+
+// A consumed code presented by a request that could not itself have redeemed it
+// (wrong client, redirect URI or verifier) is refused without ending the grant.
+func TestReplayWithBrokenBindingsLeavesGrantIntact(t *testing.T) {
+	e := newTokenEnv(t)
+	auth := basic("client-a", "test-only-secret")
+	c := e.issue(t, "client-a", callback)
+	first, err := e.token(auth, codeParams(t, c))
+	if err != nil {
+		t.Fatalf("redeem: %v", err)
+	}
+	jti := jtiOf(t, first.AccessToken)
+
+	cases := []struct {
+		name string
+		auth string
+		p    oauth.Params
+	}{
+		{"wrong client", "", codeParams(t, c, "client_id", "client-public")},
+		{"wrong verifier", auth, params(t, "grant_type", "authorization_code", "code", c,
+			"redirect_uri", callback, "code_verifier", strings.Repeat("A", 43))},
+		{"wrong redirect uri", auth, params(t, "grant_type", "authorization_code", "code", c,
+			"redirect_uri", "http://127.0.0.1:9999/cb", "code_verifier", verifier)},
+	}
+	for _, tc := range cases {
+		_, err := e.token(tc.auth, tc.p)
+		if got := code(t, err); got != oauth.CodeInvalidGrant {
+			t.Fatalf("%s: code = %q, want invalid_grant", tc.name, got)
+		}
+		if revokedAt(t, e, jti) {
+			t.Fatalf("%s: grant was revoked by a request that could not redeem the code", tc.name)
+		}
+	}
+	if _, err := e.token(auth, params(t, "grant_type", "refresh_token", "refresh_token", first.RefreshToken)); err != nil {
+		t.Fatalf("refresh token of the untouched grant: %v", err)
+	}
+
+	// The genuine client replaying the code does end it.
+	_, err = e.token(auth, codeParams(t, c))
+	if got := code(t, err); got != oauth.CodeInvalidGrant {
+		t.Fatalf("genuine replay code = %q, want invalid_grant", got)
+	}
+	if !revokedAt(t, e, jti) {
+		t.Fatal("genuine replay did not revoke the grant")
+	}
+}

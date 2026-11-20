@@ -6,3 +6,10 @@ ALTER TABLE auth_codes ADD COLUMN grant_id text NOT NULL DEFAULT '';
 ALTER TABLE refresh_tokens ADD COLUMN grant_id text NOT NULL DEFAULT '';
 ALTER TABLE access_tokens ADD COLUMN grant_id text NOT NULL DEFAULT '';
 CREATE INDEX access_tokens_grant_idx ON access_tokens(grant_id);
+
+-- Grants that have been revoked. An access token created under a revoked grant
+-- is dead on arrival, so a revocation cannot be outrun by a concurrent issuance.
+CREATE TABLE revoked_grants (
+    grant_id   TEXT PRIMARY KEY,
+    revoked_at BIGINT NOT NULL
+);

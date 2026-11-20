@@ -355,7 +355,7 @@ func (s *Service) redeemCode(ctx context.Context, client oauth.Client, p oauth.P
 		// Replay: end the grant the code started, so tokens already issued
 		// from it stop working (RFC 9700 §4.14.2). A failed revocation is
 		// reported as a server error rather than the ordinary invalid_grant.
-		if rerr := s.revokeReplayedCode(ctx, code, now); rerr != nil {
+		if rerr := s.revokeReplayedCode(ctx, client, code, redirectURI, verifier, now); rerr != nil {
 			return TokenResponse{}, rerr
 		}
 		return TokenResponse{}, oauth.InvalidGrant("authorization code is invalid, expired or already used")
@@ -404,7 +404,10 @@ func (s *Service) redeemCode(ctx context.Context, client oauth.Client, p oauth.P
 
 // revokeReplayedCode ends the grant behind an already-consumed code. A code
 // that predates grant linking carries no grant id and has nothing to revoke.
-func (s *Service) revokeReplayedCode(ctx context.Context, code string, now time.Time) error {
+// Only a request that could itself have redeemed the code (same client,
+// redirect URI and PKCE verifier) ends the grant; any other request just gets
+// the ordinary invalid_grant and leaves the grant untouched.
+func (s *Service) revokeReplayedCode(ctx context.Context, client oauth.Client, code, redirectURI, verifier string, now time.Time) error {
 	rec, err := s.store.AuthCodes().GetByHash(ctx, hashCode(code))
 	switch {
 	case errors.Is(err, oauth.ErrNotFound):
@@ -413,6 +416,10 @@ func (s *Service) revokeReplayedCode(ctx context.Context, code string, now time.
 		return oauth.ServerError(err)
 	}
 	if rec.GrantID == "" {
+		return nil
+	}
+	if rec.ClientID != client.ID || rec.RedirectURI != redirectURI ||
+		rec.CodeChallengeMethod != oauth.MethodS256 || !oauth.VerifyS256(rec.CodeChallenge, verifier) {
 		return nil
 	}
 	// A grant that issued a refresh token uses the grant id as its family id,

@@ -288,10 +288,18 @@ func (r *refreshRepo) RevokeFamily(ctx context.Context, familyID string, now tim
 type accessTokenRepo struct{ db execer }
 
 func (r *accessTokenRepo) Create(ctx context.Context, t oauth.AccessToken) error {
-	_, err := r.db.ExecContext(ctx,
-		`INSERT INTO access_tokens (jti, grant_id, client_id, user_id, scope, issued_at, expires_at)
-		 VALUES (?, ?, ?, ?, ?, ?, ?)`,
-		t.JTI, t.GrantID, t.ClientID, t.UserID, t.Scope, nanos(t.IssuedAt), nanos(t.ExpiresAt))
+	return r.insert(ctx, r.db, t)
+}
+
+// insert writes the token. A token created under a grant that has already been
+// revoked is dead on arrival (revoked_at is taken from the grant's revocation
+// record), so an issuance that races a revocation cannot leave a usable token
+// behind. An empty grant id is never in the table.
+func (r *accessTokenRepo) insert(ctx context.Context, db execer, t oauth.AccessToken) error {
+	_, err := db.ExecContext(ctx,
+		`INSERT INTO access_tokens (jti, grant_id, client_id, user_id, scope, issued_at, expires_at, revoked_at)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, (SELECT revoked_at FROM revoked_grants WHERE grant_id = ?))`,
+		t.JTI, t.GrantID, t.ClientID, t.UserID, t.Scope, nanos(t.IssuedAt), nanos(t.ExpiresAt), t.GrantID)
 	return createErr(err)
 }
 
@@ -342,6 +350,13 @@ func (r *accessTokenRepo) Revoke(ctx context.Context, jti string, now time.Time)
 func (r *accessTokenRepo) RevokeByGrant(ctx context.Context, grantID string, now time.Time) (int, error) {
 	if grantID == "" {
 		return 0, nil
+	}
+	// Record the revocation first so a token created later under this grant is
+	// dead on arrival (see insert); then revoke the tokens that already exist.
+	if _, err := r.db.ExecContext(ctx,
+		`INSERT OR IGNORE INTO revoked_grants (grant_id, revoked_at) VALUES (?, ?)`,
+		grantID, nanos(now)); err != nil {
+		return 0, err
 	}
 	res, err := r.db.ExecContext(ctx,
 		`UPDATE access_tokens SET revoked_at = ? WHERE grant_id = ? AND revoked_at IS NULL`,

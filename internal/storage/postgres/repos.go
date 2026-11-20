@@ -354,11 +354,42 @@ func (r *refreshRepo) RevokeFamily(ctx context.Context, familyID string, now tim
 type accessTokenRepo struct{ db execer }
 
 func (r *accessTokenRepo) Create(ctx context.Context, t oauth.AccessToken) error {
-	_, err := r.db.ExecContext(ctx,
-		`INSERT INTO access_tokens (jti, grant_id, client_id, user_id, scope, issued_at, expires_at)
-		 VALUES (?, ?, ?, ?, ?, ?, ?)`,
-		t.JTI, t.GrantID, t.ClientID, t.UserID, t.Scope, nanos(t.IssuedAt), nanos(t.ExpiresAt))
+	if t.GrantID == "" {
+		return r.insert(ctx, r.db, t)
+	}
+	// The per-grant lock (see lockGrant) makes this insert and a concurrent
+	// RevokeByGrant mutually exclusive, so the insert either lands before the
+	// revocation's UPDATE or sees the committed revocation record.
+	return inTx(ctx, r.db, func(db execer) error {
+		if err := lockGrant(ctx, db, t.GrantID); err != nil {
+			return err
+		}
+		return r.insert(ctx, db, t)
+	})
+}
+
+// insert writes the token. A token created under a grant that has already been
+// revoked is dead on arrival (revoked_at is taken from the grant's revocation
+// record), so an issuance that races a revocation cannot leave a usable token
+// behind. An empty grant id is never in the table.
+func (r *accessTokenRepo) insert(ctx context.Context, db execer, t oauth.AccessToken) error {
+	_, err := db.ExecContext(ctx,
+		`INSERT INTO access_tokens (jti, grant_id, client_id, user_id, scope, issued_at, expires_at, revoked_at)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, (SELECT revoked_at FROM revoked_grants WHERE grant_id = ?))`,
+		t.JTI, t.GrantID, t.ClientID, t.UserID, t.Scope, nanos(t.IssuedAt), nanos(t.ExpiresAt), t.GrantID)
 	return createErr(err)
+}
+
+// grantLockClass namespaces the per-grant advisory locks (see familyLockClass).
+const grantLockClass = 0x6f326772 // "o2gr"
+
+// lockGrant takes a transaction-scoped advisory lock for one grant. Creating an
+// access token and revoking the grant both take it: row conditions alone cannot
+// order them under READ COMMITTED, because the revocation's UPDATE cannot see an
+// uncommitted insert and the insert cannot see an uncommitted revocation record.
+func lockGrant(ctx context.Context, db execer, grantID string) error {
+	_, err := db.ExecContext(ctx, `SELECT pg_advisory_xact_lock(?::int, hashtext(?))`, grantLockClass, grantID)
+	return err
 }
 
 func (r *accessTokenRepo) GetByJTI(ctx context.Context, jti string) (oauth.AccessToken, error) {
@@ -409,13 +440,27 @@ func (r *accessTokenRepo) RevokeByGrant(ctx context.Context, grantID string, now
 	if grantID == "" {
 		return 0, nil
 	}
-	res, err := r.db.ExecContext(ctx,
-		`UPDATE access_tokens SET revoked_at = ? WHERE grant_id = ? AND revoked_at IS NULL`,
-		nanos(now), grantID)
-	if err != nil {
-		return 0, err
-	}
-	n, err := res.RowsAffected()
+	var n int64
+	err := inTx(ctx, r.db, func(db execer) error {
+		if err := lockGrant(ctx, db, grantID); err != nil {
+			return err
+		}
+		// Record the revocation first so a token created later under this
+		// grant is dead on arrival (see insert).
+		if _, err := db.ExecContext(ctx,
+			`INSERT INTO revoked_grants (grant_id, revoked_at) VALUES (?, ?) ON CONFLICT (grant_id) DO NOTHING`,
+			grantID, nanos(now)); err != nil {
+			return err
+		}
+		res, err := db.ExecContext(ctx,
+			`UPDATE access_tokens SET revoked_at = ? WHERE grant_id = ? AND revoked_at IS NULL`,
+			nanos(now), grantID)
+		if err != nil {
+			return err
+		}
+		n, err = res.RowsAffected()
+		return err
+	})
 	if err != nil {
 		return 0, err
 	}

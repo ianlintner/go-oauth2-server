@@ -673,6 +673,79 @@ func testAccessTokens(t *testing.T, f Factory) {
 		}
 	})
 
+	t.Run("token created after its grant was revoked is dead on arrival", func(t *testing.T) {
+		s := newStore(t, f)
+		_, err := s.AccessTokens().RevokeByGrant(ctx, "g1", ref)
+		mustNoErr(t, err, "revoke grant with no tokens")
+		late := sampleAccessToken("late")
+		late.GrantID = "g1"
+		mustNoErr(t, s.AccessTokens().Create(ctx, late), "create late")
+		got, err := s.AccessTokens().GetByJTI(ctx, "late")
+		mustNoErr(t, err, "get late")
+		if got.RevokedAt.IsZero() {
+			t.Fatal("token issued under a revoked grant is active")
+		}
+		// Other grants and unlinked tokens are unaffected.
+		other := sampleAccessToken("other")
+		other.GrantID = "g2"
+		mustNoErr(t, s.AccessTokens().Create(ctx, other), "create other")
+		legacy := sampleAccessToken("legacy")
+		legacy.GrantID = ""
+		mustNoErr(t, s.AccessTokens().Create(ctx, legacy), "create legacy")
+		for _, jti := range []string{"other", "legacy"} {
+			got, err := s.AccessTokens().GetByJTI(ctx, jti)
+			mustNoErr(t, err, "get "+jti)
+			if !got.RevokedAt.IsZero() {
+				t.Fatalf("%s was revoked by an unrelated grant revocation", jti)
+			}
+		}
+	})
+
+	t.Run("concurrent issuance and revocation leave no active token", func(t *testing.T) {
+		s := newStore(t, f)
+		for round := 0; round < 10; round++ {
+			grant := fmt.Sprintf("race-%d", round)
+			const issuers = 8
+			var wg sync.WaitGroup
+			start := make(chan struct{})
+			for i := 0; i < issuers; i++ {
+				wg.Add(1)
+				go func(i int) {
+					defer wg.Done()
+					<-start
+					at := sampleAccessToken(fmt.Sprintf("r%d-%d", round, i))
+					at.GrantID = grant
+					if err := s.AccessTokens().Create(ctx, at); err != nil {
+						t.Errorf("create: %v", err)
+					}
+				}(i)
+			}
+			wg.Add(1)
+			go func() {
+				defer wg.Done()
+				<-start
+				if _, err := s.AccessTokens().RevokeByGrant(ctx, grant, ref); err != nil {
+					t.Errorf("revoke: %v", err)
+				}
+			}()
+			close(start)
+			wg.Wait()
+			// Whatever the interleaving, once the revocation has returned no
+			// token of the grant may be active, including ones created after.
+			for i := 0; i < issuers; i++ {
+				jti := fmt.Sprintf("r%d-%d", round, i)
+				got, err := s.AccessTokens().GetByJTI(ctx, jti)
+				if errors.Is(err, oauth.ErrNotFound) {
+					continue
+				}
+				mustNoErr(t, err, "get "+jti)
+				if got.RevokedAt.IsZero() {
+					t.Fatalf("round %d: %s is active after the grant was revoked", round, jti)
+				}
+			}
+		}
+	})
+
 	t.Run("revoke by grant does not match an empty grant id", func(t *testing.T) {
 		s := newStore(t, f)
 		for _, jti := range []string{"l1", "l2"} {
