@@ -78,6 +78,23 @@ type Config struct {
 	// RefreshTokenTTL bounds a refresh-token rotation family (DefaultRefreshTokenTTL
 	// when zero). Ignored when Tokens is nil.
 	RefreshTokenTTL time.Duration
+
+	// MaxConcurrentHashes bounds how many password-hash computations may run
+	// at once in this process. A request that cannot take a slot immediately
+	// is refused with temporarily_unavailable (HTTP 429), never queued.
+	// DefaultMaxConcurrentHashes() when zero; negative disables the bound.
+	MaxConcurrentHashes int
+
+	// AuthFailureLimit is how many failed client or resource-owner
+	// authentications one presented identifier may accumulate per minute
+	// before further attempts are refused without computing a hash.
+	// DefaultAuthFailureLimit when zero; negative disables the limit. The
+	// limits are per process.
+	AuthFailureLimit int
+
+	// HashObserver, when set, is called each time a hash computation starts
+	// (while it holds a concurrency slot). It exists for tests and telemetry.
+	HashObserver func()
 }
 
 // Service is the authorization-code engine.
@@ -98,6 +115,14 @@ type Service struct {
 	// dummyHash is verified against when a client or user does not exist so
 	// that a missing identity costs the same as a wrong secret.
 	dummyHash string
+
+	// gate bounds concurrent hash computations; clientFails, userFails and
+	// sourceFails are the in-process failed-attempt budgets.
+	gate        hashGate
+	hashHook    func()
+	clientFails *attemptLimiter
+	userFails   *attemptLimiter
+	sourceFails *attemptLimiter
 }
 
 // New validates cfg and returns a Service. It fails closed when a dependency
@@ -112,7 +137,19 @@ func New(cfg Config) (*Service, error) {
 		codeTTL:  cfg.CodeTTL, tokenTTL: cfg.AccessTokenTTL,
 		tokens:     cfg.Tokens,
 		refreshTTL: cfg.RefreshTokenTTL,
+		hashHook:   cfg.HashObserver,
 	}
+	maxHashes, failLimit := cfg.MaxConcurrentHashes, cfg.AuthFailureLimit
+	if maxHashes == 0 {
+		maxHashes = DefaultMaxConcurrentHashes()
+	}
+	if failLimit == 0 {
+		failLimit = DefaultAuthFailureLimit
+	}
+	s.gate = newHashGate(maxHashes)
+	s.clientFails = newAttemptLimiter(failLimit, authFailureWindow)
+	s.userFails = newAttemptLimiter(failLimit, authFailureWindow)
+	s.sourceFails = newAttemptLimiter(failLimit*sourceLimitFactor, authFailureWindow)
 	if s.codeTTL <= 0 {
 		s.codeTTL = DefaultCodeTTL
 	}
@@ -625,6 +662,39 @@ func (s *Service) AuthenticateClient(ctx context.Context, authorization string, 
 // authenticateClient authenticates the caller of the token endpoint using
 // exactly one method, and enforces the method the client registered.
 func (s *Service) authenticateClient(ctx context.Context, authorization string, p oauth.Params) (oauth.Client, error) {
+	// Failed attempts are counted per presented client id, known or not, and a
+	// key over budget is refused before any lookup or hash.
+	if id := presentedClientID(authorization, p); id != "" {
+		if !s.clientFails.allow(id, s.clock.Now()) {
+			return oauth.Client{}, errThrottled
+		}
+		c, err := s.authenticateClientUnlimited(ctx, authorization, p)
+		if isInvalidClient(err) {
+			s.clientFails.fail(id, s.clock.Now())
+		}
+		return c, err
+	}
+	return s.authenticateClientUnlimited(ctx, authorization, p)
+}
+
+// presentedClientID returns the client id the caller presented, if any,
+// without validating it.
+func presentedClientID(authorization string, p oauth.Params) string {
+	if authorization == "" {
+		return p.Get("client_id")
+	}
+	scheme, cred, ok := strings.Cut(authorization, " ")
+	if !ok || !strings.EqualFold(scheme, "Basic") {
+		return ""
+	}
+	id, _, err := decodeBasic(strings.TrimSpace(cred))
+	if err != nil {
+		return ""
+	}
+	return id
+}
+
+func (s *Service) authenticateClientUnlimited(ctx context.Context, authorization string, p oauth.Params) (oauth.Client, error) {
 	if authorization != "" {
 		return s.authenticateBasic(ctx, authorization, p)
 	}
@@ -733,7 +803,9 @@ func (s *Service) lookupClient(ctx context.Context, id string) (oauth.Client, er
 	c, err := s.store.Clients().Get(ctx, id)
 	switch {
 	case errors.Is(err, oauth.ErrNotFound):
-		_, _ = secret.Verify(s.dummyHash, "x")
+		if err := s.dummyVerify(); err != nil {
+			return oauth.Client{}, err
+		}
 		return oauth.Client{}, errAuthFailed
 	case err != nil:
 		return oauth.Client{}, oauth.ServerError(err)
@@ -745,10 +817,15 @@ func (s *Service) lookupClient(ctx context.Context, id string) (oauth.Client, er
 // without a stored hash can never authenticate.
 func (s *Service) checkSecret(c oauth.Client, presented string) error {
 	if c.SecretHash == "" || presented == "" {
-		_, _ = secret.Verify(s.dummyHash, "x")
+		if err := s.dummyVerify(); err != nil {
+			return err
+		}
 		return errAuthFailed
 	}
-	ok, err := secret.Verify(c.SecretHash, presented)
+	ok, err := s.verifyBounded(c.SecretHash, presented)
+	if errors.Is(err, errThrottled) {
+		return err
+	}
 	if err != nil {
 		return oauth.ServerError(err)
 	}
@@ -891,18 +968,47 @@ func validScopeToken(s string) bool {
 
 // AuthenticateUser verifies a resource owner's username and password.
 func (s *Service) AuthenticateUser(ctx context.Context, username, password string) (oauth.User, error) {
+	return s.AuthenticateUserFrom(ctx, "", username, password)
+}
+
+// AuthenticateUserFrom is AuthenticateUser with the network source of the
+// attempt (the connection's remote host; never a forwarded header). Failed
+// attempts are counted per presented username and, when source is non-empty,
+// per source; a key over budget is refused with temporarily_unavailable
+// (HTTP 429) before any hash is computed, whether or not the user exists.
+func (s *Service) AuthenticateUserFrom(ctx context.Context, source, username, password string) (oauth.User, error) {
 	if username == "" || password == "" {
 		return oauth.User{}, ErrInvalidCredentials
 	}
+	now := s.clock.Now()
+	if !s.userFails.allow(username, now) || (source != "" && !s.sourceFails.allow(source, now)) {
+		return oauth.User{}, errThrottled
+	}
+	u, err := s.authenticateUser(ctx, username, password)
+	if errors.Is(err, ErrInvalidCredentials) {
+		s.userFails.fail(username, now)
+		if source != "" {
+			s.sourceFails.fail(source, now)
+		}
+	}
+	return u, err
+}
+
+func (s *Service) authenticateUser(ctx context.Context, username, password string) (oauth.User, error) {
 	u, err := s.store.Users().GetByUsername(ctx, username)
 	switch {
 	case errors.Is(err, oauth.ErrNotFound):
-		_, _ = secret.Verify(s.dummyHash, "x")
+		if err := s.dummyVerify(); err != nil {
+			return oauth.User{}, err
+		}
 		return oauth.User{}, ErrInvalidCredentials
 	case err != nil:
 		return oauth.User{}, oauth.ServerError(err)
 	}
-	ok, err := secret.Verify(u.PasswordHash, password)
+	ok, err := s.verifyBounded(u.PasswordHash, password)
+	if errors.Is(err, errThrottled) {
+		return oauth.User{}, err
+	}
 	if err != nil {
 		return oauth.User{}, oauth.ServerError(err)
 	}
