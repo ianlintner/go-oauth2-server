@@ -128,6 +128,10 @@ type IssueParams struct {
 	Subject  string // the resource-owner id, used as the "sub" claim
 	Scope    string // space-separated scopes
 
+	// GrantID links the token to the grant that produced it, so revoking the
+	// grant revokes the token. Empty leaves the token unlinked.
+	GrantID string
+
 	// Audience lists the resource servers the token is intended for (the
 	// "aud" claim, RFC 9068 §2.2). It must not be empty: Issue never mints an
 	// audience-less token.
@@ -208,6 +212,7 @@ func (s *Service) Issue(ctx context.Context, p IssueParams) (AccessToken, error)
 
 	rec := oauth.AccessToken{
 		JTI:       jti,
+		GrantID:   p.GrantID,
 		ClientID:  p.ClientID,
 		UserID:    p.Subject,
 		Scope:     p.Scope,
@@ -487,8 +492,14 @@ func (s *Service) Revoke(ctx context.Context, tokenValue, clientID, tokenTypeHin
 	// regardless of the hint (a wrong access_token hint must still find it).
 	if rec, err := s.store.RefreshTokens().GetByHash(ctx, hashRefresh(tokenValue)); err == nil {
 		if clientID != "" && rec.ClientID == clientID {
-			_, rerr := s.store.RefreshTokens().RevokeFamily(ctx, rec.FamilyID, s.clock.Now())
-			if rerr != nil {
+			// Revoking a refresh token ends its grant: the family and every
+			// access token issued under it. A record that predates grant
+			// linking falls back to its family id.
+			grantID := rec.GrantID
+			if grantID == "" {
+				grantID = rec.FamilyID
+			}
+			if rerr := oauth.RevokeGrant(ctx, s.store, rec.FamilyID, grantID, s.clock.Now()); rerr != nil {
 				return oauth.ServerError(rerr)
 			}
 		}
@@ -526,21 +537,43 @@ func hashRefresh(v string) string {
 }
 
 // RotateRefresh rotates a refresh token within a known family. On replay
-// (ErrAlreadyConsumed) it revokes the whole family — the replay detector this
-// service gates — and returns ErrAlreadyConsumed so the caller still refuses the
-// grant. Other storage errors are surfaced directly.
+// (ErrAlreadyConsumed) it ends the grant — the refresh family and every access
+// token issued under it — and returns ErrAlreadyConsumed so the caller still
+// refuses the grant. If ending the grant fails, that failure is returned as a
+// server error instead, so it is never mistaken for a handled replay. Other
+// storage errors are surfaced directly.
 func (s *Service) RotateRefresh(ctx context.Context, tokenHash, familyID string) (oauth.RefreshToken, error) {
-	t, err := s.store.RefreshTokens().Rotate(ctx, tokenHash, s.clock.Now())
-	if errors.Is(err, oauth.ErrAlreadyConsumed) {
-		if familyID != "" {
-			_, _ = s.store.RefreshTokens().RevokeFamily(ctx, familyID, s.clock.Now())
-		}
-		return oauth.RefreshToken{}, err
-	}
-	if err != nil {
+	t, err := RotateRefreshToken(ctx, s.store, tokenHash, familyID, s.clock.Now())
+	if err != nil && !errors.Is(err, oauth.ErrAlreadyConsumed) {
 		return oauth.RefreshToken{}, oauth.ServerError(err)
 	}
-	return t, nil
+	return t, err
+}
+
+// RotateRefreshToken rotates a refresh token and, on replay, ends the grant it
+// belongs to (see oauth.RevokeGrant). It returns oauth.ErrAlreadyConsumed when
+// the replay was handled, and any other error (including a failed revocation)
+// as-is for the caller to report.
+func RotateRefreshToken(ctx context.Context, store oauth.Store, tokenHash, familyID string, now time.Time) (oauth.RefreshToken, error) {
+	t, err := store.RefreshTokens().Rotate(ctx, tokenHash, now)
+	if !errors.Is(err, oauth.ErrAlreadyConsumed) {
+		return t, err
+	}
+	if familyID == "" {
+		return oauth.RefreshToken{}, err
+	}
+	// The grant id comes from the replayed record; legacy records fall back to
+	// their family id.
+	grantID := familyID
+	if rec, gerr := store.RefreshTokens().GetByHash(ctx, tokenHash); gerr == nil && rec.GrantID != "" {
+		grantID = rec.GrantID
+	} else if gerr != nil && !errors.Is(gerr, oauth.ErrNotFound) {
+		return oauth.RefreshToken{}, gerr
+	}
+	if rerr := oauth.RevokeGrant(ctx, store, familyID, grantID, now); rerr != nil {
+		return oauth.RefreshToken{}, fmt.Errorf("token: revoke grant after refresh replay: %w", rerr)
+	}
+	return oauth.RefreshToken{}, err
 }
 
 // JWKS returns the published public signing keys as raw JSON (RFC 7517),
