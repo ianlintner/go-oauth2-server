@@ -77,10 +77,11 @@ var devicePage = template.Must(template.New("device").Parse(`<!doctype html>
 <button type="submit" name="action" value="approve">Approve</button>
 <button type="submit" name="action" value="deny">Deny</button>
 </form>
-{{else}}
-<form method="get" action="/oauth/device/verify">
+{{else if .Token}}
+<form method="post" action="/oauth/device/verify">
+<input type="hidden" name="csrf_token" value="{{.Token}}">
 <label>Code <input name="user_code" autocomplete="off" required></label>
-<button type="submit">Continue</button>
+<button type="submit" name="action" value="lookup">Continue</button>
 </form>
 {{end}}
 </body></html>
@@ -116,6 +117,38 @@ func deviceTokenPurpose(userCode string) string {
 	return "device:" + canonicalUserCode(userCode)
 }
 
+// deviceEntryPurpose labels the token carried by the code-entry form. It is
+// bound to the session but not to a code, because no code exists yet.
+const deviceEntryPurpose = "device-entry"
+
+// renderDeviceEntry shows the code-entry form with a session-bound token, so
+// a typed code can be looked up by POST regardless of request metadata.
+func (h *oauthHandlers) renderDeviceEntry(w http.ResponseWriter, r *http.Request, msg string) {
+	token, ok := h.sessions.FormToken(r, deviceEntryPurpose)
+	if !ok {
+		h.fail(w, r, oauth.ServerError(errors.New("could not issue form token")))
+		return
+	}
+	h.renderDevice(w, http.StatusOK, deviceView{Message: msg, Token: token})
+}
+
+// renderDeviceConfirm shows the client and scope for a live authorization.
+func (h *oauthHandlers) renderDeviceConfirm(w http.ResponseWriter, r *http.Request, code string, rec oauth.DeviceCode, client oauth.Client) {
+	if rec.Status != oauth.DevicePending {
+		h.renderDevice(w, http.StatusOK, deviceView{Message: "This request has already been answered."})
+		return
+	}
+	token, ok := h.sessions.FormToken(r, deviceTokenPurpose(code))
+	if !ok {
+		h.fail(w, r, oauth.ServerError(errors.New("could not issue form token")))
+		return
+	}
+	h.renderDevice(w, http.StatusOK, deviceView{
+		Confirm: true, ClientName: client.Name, ClientID: client.ID,
+		Scope: rec.Scope, UserCode: canonicalUserCode(code), Token: token,
+	})
+}
+
 func (h *oauthHandlers) deviceVerify(w http.ResponseWriter, r *http.Request) {
 	switch r.Method {
 	case http.MethodGet:
@@ -137,31 +170,28 @@ func (h *oauthHandlers) deviceVerify(w http.ResponseWriter, r *http.Request) {
 			code = ""
 		}
 		if code == "" {
-			h.renderDevice(w, http.StatusOK, deviceView{})
+			h.renderDeviceEntry(w, r, "")
 			return
 		}
 		// Only a request the browser marks as same-origin (or typed or
 		// bookmarked) is charged to the decision budget; anything without
-		// that metadata uses a separate lookup-only window.
+		// that metadata uses a separate lookup-only window. When that window
+		// is used up, fall back to the entry form: its lookup is a POST that
+		// needs a session-bound token, so the user is never locked out and
+		// nothing off-site can trigger it.
 		site := r.Header.Get("Sec-Fetch-Site")
-		rec, client, err := h.svc.DescribeDevice(r.Context(), user, code, site == "same-origin" || site == "none")
+		intent := site == "same-origin" || site == "none"
+		rec, client, err := h.svc.DescribeDevice(r.Context(), user, code, intent)
 		if err != nil {
+			var oe *oauth.Error
+			if !intent && errors.As(err, &oe) && oe.HTTPStatus() == http.StatusTooManyRequests {
+				h.renderDeviceEntry(w, r, "Enter the code below to continue.")
+				return
+			}
 			h.fail(w, r, err)
 			return
 		}
-		if rec.Status != oauth.DevicePending {
-			h.renderDevice(w, http.StatusOK, deviceView{Message: "This request has already been answered."})
-			return
-		}
-		token, ok := h.sessions.FormToken(r, deviceTokenPurpose(code))
-		if !ok {
-			h.fail(w, r, oauth.ServerError(errors.New("could not issue form token")))
-			return
-		}
-		h.renderDevice(w, http.StatusOK, deviceView{
-			Confirm: true, ClientName: client.Name, ClientID: client.ID,
-			Scope: rec.Scope, UserCode: canonicalUserCode(code), Token: token,
-		})
+		h.renderDeviceConfirm(w, r, code, rec, client)
 	case http.MethodPost:
 		h.deviceDecide(w, r)
 	default:
@@ -198,6 +228,22 @@ func (h *oauthHandlers) deviceDecide(w http.ResponseWriter, r *http.Request) {
 	}
 	if !ok {
 		h.fail(w, r, oauth.AccessDenied("sign in before entering a device code").WithStatus(http.StatusUnauthorized))
+		return
+	}
+	if p.Get("action") == "lookup" {
+		// Typed code from the entry form: the session-bound token proves the
+		// request came from that form; the lookup is charged to the decision
+		// budget like any other guess.
+		if !h.sessions.VerifyFormToken(r, deviceEntryPurpose, p.Get("csrf_token")) {
+			http.Error(w, "missing or invalid form token", http.StatusForbidden)
+			return
+		}
+		rec, client, err := h.svc.DescribeDevice(r.Context(), user, p.Get("user_code"), true)
+		if err != nil {
+			h.fail(w, r, err)
+			return
+		}
+		h.renderDeviceConfirm(w, r, p.Get("user_code"), rec, client)
 		return
 	}
 	if !h.sessions.VerifyFormToken(r, deviceTokenPurpose(p.Get("user_code")), p.Get("csrf_token")) {

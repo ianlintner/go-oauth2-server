@@ -365,7 +365,7 @@ func TestDeviceVerifyAnsweredRequestShowsNoForm(t *testing.T) {
 	// Replaying the same submission cannot decide again.
 	wantErrBody(t, e.postForm("/oauth/device/verify", decideBody(uc, "deny", tok), cookie(c)), 400, "invalid_request")
 	rec := e.get("/oauth/device/verify?user_code="+url.QueryEscape(uc), cookie(c))
-	if strings.Contains(rec.Body.String(), "csrf_token") {
+	if strings.Contains(rec.Body.String(), `value="approve"`) {
 		t.Fatalf("answered request still offers a decision form: %s", rec.Body.String())
 	}
 }
@@ -640,7 +640,7 @@ func TestDeviceVerifyCrossSiteNavigationDoesNotSpendFailureBudget(t *testing.T) 
 	for _, site := range []string{"cross-site", "same-site"} {
 		for i := 0; i < 10; i++ {
 			rec := e.get("/oauth/device/verify?user_code=BCDF-GHJK", cookie(c), header("Sec-Fetch-Site", site))
-			if rec.Code != 200 || strings.Contains(rec.Body.String(), "csrf_token") {
+			if rec.Code != 200 || strings.Contains(rec.Body.String(), `value="approve"`) {
 				t.Fatalf("%s navigation = %d %s, want the plain entry form", site, rec.Code, rec.Body.String())
 			}
 		}
@@ -679,6 +679,52 @@ func TestDeviceVerifyHeaderlessNavigationDoesNotSpendDecisionBudget(t *testing.T
 		t.Fatalf("same-origin lookup after headerless navigations = %d %s", page.Code, page.Body.String())
 	}
 	e.postForm("/oauth/device/verify", decideBody(uc, "approve", html.UnescapeString(m[1])), cookie(c))
+	e.clock.t = e.clock.t.Add(6 * time.Second)
+	if rec := pollHTTP(e, d["device_code"].(string)); rec.Code != 200 {
+		t.Fatalf("poll after approve = %d %s", rec.Code, rec.Body.String())
+	}
+}
+
+func TestDeviceVerifyHeaderlessLockoutFallsBackToTokenProtectedEntry(t *testing.T) {
+	e := newExtEnv(t, false)
+	d := startDeviceHTTP(t, e)
+	uc := d["user_code"].(string)
+	c := e.login(t)
+
+	// Unsolicited headerless lookups use up the lookup-only window.
+	var entry *httptest.ResponseRecorder
+	for i := 0; i < 10; i++ {
+		entry = e.get("/oauth/device/verify?user_code=BCDF-GHJK", cookie(c))
+	}
+	// The user is not locked out: they get the entry form, never a 429.
+	m := csrfField.FindStringSubmatch(entry.Body.String())
+	if entry.Code != 200 || m == nil || !strings.Contains(entry.Body.String(), `value="lookup"`) {
+		t.Fatalf("exhausted headerless lookup = %d %s, want the token-protected entry form", entry.Code, entry.Body.String())
+	}
+	entryTok := html.UnescapeString(m[1])
+
+	// A lookup without a valid entry token is refused and costs nothing.
+	for i := 0; i < 10; i++ {
+		v := url.Values{"user_code": {"BCDF-GHJK"}, "action": {"lookup"}}.Encode()
+		if rec := e.postForm("/oauth/device/verify", v, cookie(c)); rec.Code != 403 {
+			t.Fatalf("tokenless lookup = %d, want 403", rec.Code)
+		}
+	}
+	// A code-bound decision token is not an entry token.
+	// The typed lookup with the entry token works and shows the client.
+	v := url.Values{"user_code": {uc}, "action": {"lookup"}, "csrf_token": {entryTok}}.Encode()
+	page := e.postForm("/oauth/device/verify", v, cookie(c))
+	pm := csrfField.FindStringSubmatch(page.Body.String())
+	if page.Code != 200 || pm == nil || !strings.Contains(page.Body.String(), "read") {
+		t.Fatalf("typed lookup = %d %s", page.Code, page.Body.String())
+	}
+	// The entry token cannot decide.
+	if rec := e.postForm("/oauth/device/verify", decideBody(uc, "approve", entryTok), cookie(c)); rec.Code != 403 {
+		t.Fatalf("decision with entry token = %d, want 403", rec.Code)
+	}
+	if rec := e.postForm("/oauth/device/verify", decideBody(uc, "approve", html.UnescapeString(pm[1])), cookie(c)); rec.Code != 200 {
+		t.Fatalf("approve = %d %s", rec.Code, rec.Body.String())
+	}
 	e.clock.t = e.clock.t.Add(6 * time.Second)
 	if rec := pollHTTP(e, d["device_code"].(string)); rec.Code != 200 {
 		t.Fatalf("poll after approve = %d %s", rec.Code, rec.Body.String())

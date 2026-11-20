@@ -55,7 +55,12 @@ it is RFC-safe. They are proposed here for owner review, not silently shipped.
    request marked `cross-site` or `same-site` gets the plain entry form without
    any lookup, and a request without that header is looked up against a
    separate lookup-only window, so lookups the user did not type cannot use up
-   the budget that guards decisions. The decision `POST` must carry
+   the budget that guards decisions. When that window is used up the page
+   answers with the entry form instead of an error: the form carries a
+   session-bound token and submits the typed code by `POST` with
+   `action=lookup`, which needs that token (`403` otherwise) and is charged to
+   the decision budget, so a user whose browser omits the header is never
+   locked out and nothing off-site can trigger the lookup. The decision `POST` must carry
    the `csrf_token` issued with that page — bound to the session cookie and to
    that user code, valid for 15 minutes — and an `action` of exactly `approve`
    or `deny`; a missing token is `403`, a missing or other `action` is
