@@ -107,7 +107,10 @@ it is RFC-safe. They are proposed here for owner review, not silently shipped.
   in production) or on `/oauth/device_authorization` and registration (neither is
   reachable in production: the first is conformance-only, the second is refused).
 - The user-code failure limiter is **in-process memory**, so it does not span
-  replicas; it bounds brute force only per process.
+  replicas; it bounds brute force only per process. The client-authentication
+  and login failure budgets and the concurrent-hash bound (README, "Request
+  throttling") are per process in the same way. Unauthenticated `/oauth/par`
+  and the other endpoints are still not limited per source.
 - The user code is stored as an (unsalted) SHA-256 of ~34.6 bits, brute-forceable
   if the database leaks, within its 10-minute TTL.
 - A token-assembly failure after `Consume` would burn a device code without

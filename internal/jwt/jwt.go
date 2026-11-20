@@ -30,6 +30,9 @@ import (
 const (
 	// rsaBits is the RSA modulus size for generated/ephemeral keys.
 	rsaBits = 2048
+	// minRSABits is the smallest accepted modulus for a signing key
+	// (RFC 7518 section 3.3, RFC 8725 section 3.5).
+	minRSABits = 2048
 )
 
 // KeySet holds the active RSA signing key and the public keys it publishes.
@@ -49,7 +52,7 @@ func PrepareKeySet(path string, production bool) (*KeySet, error) {
 	}
 
 	if key, loadErr := parseRSAPrivateKey(raw); loadErr == nil {
-		return NewKeySet(key), nil
+		return NewKeySet(key)
 	} else if !isPlaceholder(raw) || production {
 		// Not a parseable RSA key and not the placeholder sentinel. Either we
 		// are in production (never invent a key), or the file is meant to hold
@@ -67,7 +70,7 @@ func PrepareKeySet(path string, production bool) (*KeySet, error) {
 	if err != nil {
 		return nil, fmt.Errorf("jwt: generate ephemeral signing key: %w", err)
 	}
-	return NewKeySet(key), nil
+	return NewKeySet(key)
 }
 
 // isPlaceholder reports whether raw is the sentinel placeholder the conformance
@@ -76,8 +79,15 @@ func isPlaceholder(raw []byte) bool {
 	return strings.TrimSpace(string(raw)) == "placeholder-key-material"
 }
 
-// NewKeySet builds a KeySet from an existing RSA private key.
-func NewKeySet(key *rsa.PrivateKey) *KeySet {
+// NewKeySet builds a KeySet from an existing RSA private key. It refuses a
+// nil key and a modulus smaller than 2048 bits.
+func NewKeySet(key *rsa.PrivateKey) (*KeySet, error) {
+	if key == nil {
+		return nil, errors.New("jwt: signing key is nil")
+	}
+	if bits := key.N.BitLen(); bits < minRSABits {
+		return nil, fmt.Errorf("jwt: signing key modulus is %d bits, want at least %d", bits, minRSABits)
+	}
 	kid := keyID(&key.PublicKey)
 	jwk := jose.JSONWebKey{
 		Key:       &key.PublicKey,
@@ -90,7 +100,7 @@ func NewKeySet(key *rsa.PrivateKey) *KeySet {
 		kid:  kid,
 		jwk:  jwk,
 		jwks: jose.JSONWebKeySet{Keys: []jose.JSONWebKey{jwk}},
-	}
+	}, nil
 }
 
 // parseRSAPrivateKey parses a PEM PKCS#1 or PKCS#8 RSA private key.
@@ -196,7 +206,7 @@ func NewVerifier(ks *KeySet, opts ...VerifierOption) *Verifier {
 
 // Verify implements oauth.Verifier.
 func (v *Verifier) Verify(_ context.Context, token string) (map[string]any, error) {
-	obj, err := jose.ParseSigned(token, []jose.SignatureAlgorithm{jose.RS256})
+	obj, err := jose.ParseSignedCompact(token, []jose.SignatureAlgorithm{jose.RS256})
 	if err != nil {
 		return nil, fmt.Errorf("jwt: parse: %w", err)
 	}

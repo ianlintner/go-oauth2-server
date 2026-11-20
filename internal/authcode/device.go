@@ -106,6 +106,10 @@ func (s *Service) AuthorizeDevice(ctx context.Context, authorization string, p o
 	if err != nil {
 		return DeviceAuthorization{}, err
 	}
+	audience, err := s.validateResource(client, p.Get("resource"))
+	if err != nil {
+		return DeviceAuthorization{}, err
+	}
 
 	for attempt := 0; attempt < 3; attempt++ {
 		raw, err := s.rnd.Bytes(codeBytes)
@@ -122,6 +126,7 @@ func (s *Service) AuthorizeDevice(ctx context.Context, authorization string, p o
 			UserCodeHash:   hashCode(userCode),
 			ClientID:       client.ID,
 			Scope:          scope,
+			Audience:       audience,
 			Status:         oauth.DevicePending,
 			ExpiresAt:      s.clock.Now().Add(DefaultDeviceCodeTTL),
 			Interval:       DefaultDeviceInterval,
@@ -306,11 +311,18 @@ func (s *Service) deviceToken(ctx context.Context, client oauth.Client, p oauth.
 		return TokenResponse{}, oauth.AuthorizationPending()
 	}
 
+	// Resolve the audience before the code is spent, so a refused resource
+	// does not burn an approved authorization.
+	audience, err := s.boundAudience(client, rec.Audience, p.Get("resource"))
+	if err != nil {
+		return TokenResponse{}, err
+	}
+
 	if _, err := repo.Consume(ctx, hash, now); err != nil {
 		if errors.Is(err, oauth.ErrAlreadyConsumed) || errors.Is(err, oauth.ErrNotFound) {
 			return TokenResponse{}, oauth.InvalidGrant("device code is invalid or already used")
 		}
 		return TokenResponse{}, oauth.ServerError(err)
 	}
-	return s.issueTokens(ctx, client.ID, rec.UserID, rec.Scope, grantAllowed(client, GrantRefreshToken), "")
+	return s.issueTokens(ctx, client.ID, rec.UserID, rec.Scope, audience, grantAllowed(client, GrantRefreshToken), "")
 }

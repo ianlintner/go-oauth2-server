@@ -14,7 +14,7 @@ import (
 
 type deviceRepo struct{ db execer }
 
-const deviceCols = `device_code_hash, user_code_hash, client_id, scope, status, user_id, expires_at, poll_interval, last_poll_at, consumed_at IS NOT NULL`
+const deviceCols = `device_code_hash, user_code_hash, client_id, scope, audience, status, user_id, expires_at, poll_interval, last_poll_at, consumed_at IS NOT NULL`
 
 func scanDevice(row *sql.Row) (oauth.DeviceCode, error) {
 	var (
@@ -22,7 +22,7 @@ func scanDevice(row *sql.Row) (oauth.DeviceCode, error) {
 		expires int64
 		poll    sql.NullInt64
 	)
-	if err := row.Scan(&d.DeviceCodeHash, &d.UserCodeHash, &d.ClientID, &d.Scope, &d.Status, &d.UserID, &expires, &d.Interval, &poll, &d.Consumed); err != nil {
+	if err := row.Scan(&d.DeviceCodeHash, &d.UserCodeHash, &d.ClientID, &d.Scope, &d.Audience, &d.Status, &d.UserID, &expires, &d.Interval, &poll, &d.Consumed); err != nil {
 		return oauth.DeviceCode{}, err
 	}
 	d.ExpiresAt = fromNanos(expires)
@@ -34,9 +34,9 @@ func scanDevice(row *sql.Row) (oauth.DeviceCode, error) {
 
 func (r *deviceRepo) Create(ctx context.Context, d oauth.DeviceCode) error {
 	_, err := r.db.ExecContext(ctx,
-		`INSERT INTO device_codes (device_code_hash, user_code_hash, client_id, scope, status, user_id, expires_at, poll_interval)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
-		d.DeviceCodeHash, d.UserCodeHash, d.ClientID, d.Scope, d.Status, d.UserID, nanos(d.ExpiresAt), d.Interval)
+		`INSERT INTO device_codes (device_code_hash, user_code_hash, client_id, scope, audience, status, user_id, expires_at, poll_interval)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		d.DeviceCodeHash, d.UserCodeHash, d.ClientID, d.Scope, d.Audience, d.Status, d.UserID, nanos(d.ExpiresAt), d.Interval)
 	return createErr(err)
 }
 
@@ -102,14 +102,14 @@ func (r *deviceRepo) Consume(ctx context.Context, hash string, now time.Time) (o
 
 type pushedRepo struct{ db execer }
 
-const pushedCols = `uri_hash, client_id, redirect_uri, scope, state, code_challenge, nonce, expires_at`
+const pushedCols = `uri_hash, client_id, redirect_uri, scope, audience, state, code_challenge, nonce, expires_at`
 
 func scanPushed(row *sql.Row) (oauth.PushedRequest, error) {
 	var (
 		p       oauth.PushedRequest
 		expires int64
 	)
-	if err := row.Scan(&p.URIHash, &p.ClientID, &p.RedirectURI, &p.Scope, &p.State, &p.CodeChallenge, &p.Nonce, &expires); err != nil {
+	if err := row.Scan(&p.URIHash, &p.ClientID, &p.RedirectURI, &p.Scope, &p.Audience, &p.State, &p.CodeChallenge, &p.Nonce, &expires); err != nil {
 		return oauth.PushedRequest{}, err
 	}
 	p.ExpiresAt = fromNanos(expires)
@@ -118,8 +118,8 @@ func scanPushed(row *sql.Row) (oauth.PushedRequest, error) {
 
 func (r *pushedRepo) Create(ctx context.Context, p oauth.PushedRequest) error {
 	_, err := r.db.ExecContext(ctx,
-		`INSERT INTO pushed_requests (`+pushedCols+`) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
-		p.URIHash, p.ClientID, p.RedirectURI, p.Scope, p.State, p.CodeChallenge, p.Nonce, nanos(p.ExpiresAt))
+		`INSERT INTO pushed_requests (`+pushedCols+`) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		p.URIHash, p.ClientID, p.RedirectURI, p.Scope, p.Audience, p.State, p.CodeChallenge, p.Nonce, nanos(p.ExpiresAt))
 	return createErr(err)
 }
 

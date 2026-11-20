@@ -9,8 +9,10 @@ import (
 	"fmt"
 	"net/url"
 	"os"
+	"runtime"
 	"strconv"
 	"strings"
+	"time"
 )
 
 // Environment names the deployment class, which selects how strict the
@@ -34,6 +36,14 @@ const (
 	// minSessionSecretLen is the minimum length in bytes for the cookie/session
 	// secret.
 	minSessionSecretLen = 32
+
+	// Defaults for the HTTP server limits. The largest expected request is a
+	// small form body, so these are generous for normal clients; operators
+	// behind slow proxies can raise them deliberately.
+	defaultReadTimeout    = 30 * time.Second
+	defaultWriteTimeout   = 60 * time.Second
+	defaultIdleTimeout    = 120 * time.Second
+	defaultMaxHeaderBytes = 32 << 10
 )
 
 // Config is the validated runtime configuration.
@@ -61,6 +71,13 @@ type Config struct {
 	CookieSecure           bool
 	AllowInsecureRedirects bool
 
+	// HTTP server limits: whole-request read, response write and keep-alive
+	// idle durations, and the maximum request header size in bytes.
+	ReadTimeout    time.Duration
+	WriteTimeout   time.Duration
+	IdleTimeout    time.Duration
+	MaxHeaderBytes int
+
 	// ConformanceMode enables the contract's test-mode SUT interface. It is
 	// off unless explicitly set, and refused in production.
 	ConformanceMode bool
@@ -70,6 +87,15 @@ type Config struct {
 	// default, implied by conformance mode, and refused in production until
 	// an initial-access-token policy is approved.
 	DynamicRegistration bool
+
+	// MaxConcurrentHashes bounds concurrent password-hash computations per
+	// process (OAUTH2_MAX_CONCURRENT_HASHES). 0 selects the default (one per
+	// CPU); a negative value disables the bound.
+	MaxConcurrentHashes int
+	// AuthFailureLimit is the per-identifier failed-authentication budget per
+	// minute (OAUTH2_AUTH_FAILURES_PER_MINUTE). 0 selects the default (10); a
+	// negative value disables it. Both are per process.
+	AuthFailureLimit int
 }
 
 // Load reads configuration through getenv (os.Getenv when nil) and validates
@@ -95,8 +121,10 @@ func Load(getenv func(string) string) (Config, error) {
 		ConformanceSeed: get("OAUTH2_CONFORMANCE_SEED"),
 	}
 
+	// An unset environment is the strict one: relaxed behavior requires an
+	// explicit development or test value.
 	if cfg.Environment == "" {
-		cfg.Environment = EnvDevelopment
+		cfg.Environment = EnvProduction
 	}
 	switch cfg.Environment {
 	case EnvDevelopment, EnvTest, EnvProduction:
@@ -139,6 +167,32 @@ func Load(getenv func(string) string) (Config, error) {
 		fail("OAUTH2_METRICS_ENABLED %v", err)
 	}
 
+	// Throttling. Test-mode conformance runs hammer endpoints from one
+	// source, so they default to unthrottled unless a value is set.
+	limitDefault := 0
+	if get("OAUTH2_CONFORMANCE_MODE") == "1" {
+		limitDefault = -1
+	}
+	if cfg.MaxConcurrentHashes, err = intEnv(get("OAUTH2_MAX_CONCURRENT_HASHES"), limitDefault); err != nil {
+		fail("OAUTH2_MAX_CONCURRENT_HASHES %v", err)
+	}
+	if cfg.AuthFailureLimit, err = intEnv(get("OAUTH2_AUTH_FAILURES_PER_MINUTE"), limitDefault); err != nil {
+		fail("OAUTH2_AUTH_FAILURES_PER_MINUTE %v", err)
+	}
+
+	if cfg.ReadTimeout, err = durationEnv(get("OAUTH2_READ_TIMEOUT"), defaultReadTimeout); err != nil {
+		fail("OAUTH2_READ_TIMEOUT %v", err)
+	}
+	if cfg.WriteTimeout, err = durationEnv(get("OAUTH2_WRITE_TIMEOUT"), defaultWriteTimeout); err != nil {
+		fail("OAUTH2_WRITE_TIMEOUT %v", err)
+	}
+	if cfg.IdleTimeout, err = durationEnv(get("OAUTH2_IDLE_TIMEOUT"), defaultIdleTimeout); err != nil {
+		fail("OAUTH2_IDLE_TIMEOUT %v", err)
+	}
+	if cfg.MaxHeaderBytes, err = positiveIntEnv(get("OAUTH2_MAX_HEADER_BYTES"), defaultMaxHeaderBytes); err != nil {
+		fail("OAUTH2_MAX_HEADER_BYTES %v", err)
+	}
+
 	// Conformance mode is a strict "1": no truthy synonyms enable test-mode
 	// credentials by accident.
 	switch mode := get("OAUTH2_CONFORMANCE_MODE"); mode {
@@ -164,6 +218,11 @@ func Load(getenv func(string) string) (Config, error) {
 	}
 	if strings.HasPrefix(cfg.StorageDSN, "postgres://") || strings.HasPrefix(cfg.StorageDSN, "postgresql://") {
 		cfg.StorageDriver = "postgres"
+		if production {
+			if err := validatePostgresTLS(cfg.StorageDSN); err != nil {
+				fail("OAUTH2_STORAGE_DSN %v", err)
+			}
+		}
 	} else if strings.Contains(cfg.StorageDSN, "://") {
 		fail("OAUTH2_STORAGE_DSN has an unsupported database scheme")
 	} else {
@@ -238,7 +297,64 @@ func validateKeyFile(path string) error {
 	if info.Size() == 0 {
 		return errors.New("is empty")
 	}
+	// POSIX permission bits are only meaningful off Windows.
+	if runtime.GOOS != "windows" {
+		if perm := info.Mode().Perm(); perm&0o077 != 0 {
+			return fmt.Errorf("must not be accessible by group or other (mode is %#o, want 0600 or stricter)", perm)
+		}
+	}
 	return nil
+}
+
+// intEnv parses an optional integer, returning fallback when raw is empty.
+func intEnv(raw string, fallback int) (int, error) {
+	if raw == "" {
+		return fallback, nil
+	}
+	v, err := strconv.Atoi(raw)
+	if err != nil {
+		return 0, fmt.Errorf("must be an integer (got %q)", raw)
+	}
+	return v, nil
+}
+
+// validatePostgresTLS requires an explicit sslmode that encrypts the
+// connection. It never echoes the DSN: the error names the parameter only.
+func validatePostgresTLS(dsn string) error {
+	u, err := url.Parse(dsn)
+	if err != nil {
+		return errors.New("is not a valid URL")
+	}
+	switch mode := u.Query().Get("sslmode"); mode {
+	case "require", "verify-ca", "verify-full":
+		return nil
+	case "":
+		return errors.New("must set sslmode to require, verify-ca or verify-full in production (sslmode is missing)")
+	default:
+		return errors.New("must set sslmode to require, verify-ca or verify-full in production (the configured sslmode does not guarantee an encrypted connection)")
+	}
+}
+
+func durationEnv(raw string, fallback time.Duration) (time.Duration, error) {
+	if raw == "" {
+		return fallback, nil
+	}
+	d, err := time.ParseDuration(raw)
+	if err != nil || d <= 0 {
+		return 0, fmt.Errorf("must be a positive duration such as 30s (got %q)", raw)
+	}
+	return d, nil
+}
+
+func positiveIntEnv(raw string, fallback int) (int, error) {
+	if raw == "" {
+		return fallback, nil
+	}
+	n, err := strconv.Atoi(raw)
+	if err != nil || n <= 0 {
+		return 0, fmt.Errorf("must be a positive integer (got %q)", raw)
+	}
+	return n, nil
 }
 
 func boolEnv(raw string, fallback bool) (bool, error) {

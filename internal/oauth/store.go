@@ -30,6 +30,10 @@ type Client struct {
 	RedirectURIs []string
 	Scopes       []string
 	GrantTypes   []string
+	// Resources are the resource indicators (RFC 8707) the client may request
+	// as the audience of an access token. The issuer itself is always
+	// permitted and need not be listed.
+	Resources []string
 }
 
 // User is a resource owner. PasswordHash is a password hash.
@@ -52,7 +56,10 @@ type AuthorizationCode struct {
 	CodeChallenge       string
 	CodeChallengeMethod string
 	Nonce               string // OIDC nonce from the authorization request, "" if none
-	ExpiresAt           time.Time
+	// Audience is the resource indicator the code was authorized for; "" for a
+	// record written before audiences existed.
+	Audience  string
+	ExpiresAt time.Time
 }
 
 // RefreshToken is one member of a rotation family. Only the token hash is
@@ -63,6 +70,9 @@ type RefreshToken struct {
 	ClientID  string
 	UserID    string
 	Scope     string
+	// Audience is the resource the family is bound to; it never widens on
+	// rotation. "" for a record written before audiences existed.
+	Audience  string
 	ExpiresAt time.Time
 }
 
@@ -94,9 +104,12 @@ type DeviceCode struct {
 	UserCodeHash   string
 	ClientID       string
 	Scope          string
-	Status         string // DevicePending | DeviceApproved | DeviceDenied
-	UserID         string // set when approved
-	ExpiresAt      time.Time
+	// Audience is the resource indicator requested at the device authorization
+	// request; "" when none was recorded.
+	Audience  string
+	Status    string // DevicePending | DeviceApproved | DeviceDenied
+	UserID    string // set when approved
+	ExpiresAt time.Time
 	// Interval is the minimum polling interval in seconds; it grows by 5 each
 	// time the client polls too fast (RFC 8628 §3.5).
 	Interval int
@@ -117,7 +130,9 @@ type PushedRequest struct {
 	State         string
 	CodeChallenge string
 	Nonce         string
-	ExpiresAt     time.Time
+	// Audience is the validated resource indicator, "" when none was pushed.
+	Audience  string
+	ExpiresAt time.Time
 }
 
 // ClientRepository stores registered clients.

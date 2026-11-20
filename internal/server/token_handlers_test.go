@@ -63,7 +63,10 @@ func newTokenEnv(t *testing.T) *tokenEnv {
 	if err != nil {
 		t.Fatal(err)
 	}
-	ks := jwt.NewKeySet(key)
+	ks, err := jwt.NewKeySet(key)
+	if err != nil {
+		t.Fatal(err)
+	}
 	signer := jwt.NewSigner(ks, jwt.WithType(token.AccessTokenType))
 	verifier := jwt.NewVerifier(ks, jwt.WithRequiredType(token.AccessTokenType))
 	tokens, err := token.New(token.Config{
@@ -97,7 +100,7 @@ func newTokenEnv(t *testing.T) *tokenEnv {
 // can exercise introspection and revocation against a persisted JWT.
 func (e *tokenEnv) issueAccessToken(t *testing.T, clientID, subject string) token.AccessToken {
 	t.Helper()
-	at, err := e.tokens.Issue(context.Background(), token.IssueParams{ClientID: clientID, Subject: subject, Scope: "read write"})
+	at, err := e.tokens.Issue(context.Background(), token.IssueParams{ClientID: clientID, Subject: subject, Scope: "read write", Audience: []string{issuer}})
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -178,6 +178,10 @@ func (c Client) validate() error {
 		if r == "" {
 			return errors.New("redirect_uris must not contain an empty URI")
 		}
+		// Scheme class only; plain-http policy is enforced at match time.
+		if !oauth.RedirectSchemeAllowed(r, true) {
+			return errors.New("redirect_uris contains a URI with a disallowed scheme or form")
+		}
 	}
 	for _, sc := range c.Scopes {
 		if sc == "" {
