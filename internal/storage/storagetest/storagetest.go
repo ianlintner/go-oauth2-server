@@ -92,7 +92,7 @@ func sampleCode(hash string) oauth.AuthorizationCode {
 }
 
 func sampleRefresh(hash, family string) oauth.RefreshToken {
-	return oauth.RefreshToken{TokenHash: hash, FamilyID: family, ClientID: "client-a", UserID: "user-1", Scope: "openid", ExpiresAt: ref.Add(24 * time.Hour)}
+	return oauth.RefreshToken{TokenHash: hash, FamilyID: family, ClientID: "client-a", UserID: "user-1", Scope: "openid", ExpiresAt: ref.Add(24 * time.Hour), FamilyCreatedAt: ref}
 }
 
 func sampleAccessToken(jti string) oauth.AccessToken {

@@ -3,6 +3,7 @@ package sqlite
 import (
 	"context"
 	"database/sql"
+	"io/fs"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -35,8 +36,8 @@ func TestMigrateAppliesEmbeddedSchemaAndIsIdempotent(t *testing.T) {
 	if err := db.QueryRow(`SELECT COUNT(*) FROM schema_migrations`).Scan(&n); err != nil {
 		t.Fatal(err)
 	}
-	if n != 6 {
-		t.Fatalf("schema_migrations rows = %d, want 6 (re-open must not re-apply)", n)
+	if n != 7 {
+		t.Fatalf("schema_migrations rows = %d, want 7 (re-open must not re-apply)", n)
 	}
 	for _, table := range []string{"clients", "users", "auth_codes", "refresh_tokens", "refresh_families", "access_tokens", "device_codes", "pushed_requests"} {
 		var name string
@@ -116,6 +117,47 @@ func TestMigrateRejectsBadFilenames(t *testing.T) {
 	} {
 		if err := migrate(context.Background(), db, files, "migrations"); err == nil {
 			t.Errorf("%s: migrate accepted it", name)
+		}
+	}
+}
+
+func TestFamilyAgeMigrationBackfillsExistingFamilies(t *testing.T) {
+	db := openRaw(t, filepath.Join(t.TempDir(), "m.db"))
+	ctx := context.Background()
+	sub, err := fs.Sub(embeddedMigrations, "migrations")
+	if err != nil {
+		t.Fatal(err)
+	}
+	upTo6 := fstest.MapFS{}
+	entries, _ := fs.ReadDir(sub, ".")
+	for _, e := range entries {
+		if e.Name() < "0007" {
+			b, _ := fs.ReadFile(sub, e.Name())
+			upTo6["migrations/"+e.Name()] = &fstest.MapFile{Data: b}
+		}
+	}
+	if err := migrate(ctx, db, upTo6, "migrations"); err != nil {
+		t.Fatal(err)
+	}
+	const month = int64(30 * 24 * 3600 * 1e9)
+	for _, r := range []struct {
+		hash, fam string
+		exp       int64
+	}{{"a", "f1", 10 * month}, {"b", "f1", 12 * month}, {"c", "f2", 20 * month}} {
+		if _, err := db.Exec(`INSERT INTO refresh_tokens (token_hash, family_id, client_id, user_id, scope, expires_at) VALUES (?, ?, 'c', 'u', 's', ?)`, r.hash, r.fam, r.exp); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := migrate(ctx, db, embeddedMigrations, "migrations"); err != nil {
+		t.Fatal(err)
+	}
+	for hash, want := range map[string]int64{"a": 9 * month, "b": 9 * month, "c": 19 * month} {
+		var got int64
+		if err := db.QueryRow(`SELECT family_created_at FROM refresh_tokens WHERE token_hash = ?`, hash).Scan(&got); err != nil {
+			t.Fatal(err)
+		}
+		if got != want {
+			t.Errorf("%s: family_created_at = %d, want %d", hash, got, want)
 		}
 	}
 }
