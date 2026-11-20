@@ -628,3 +628,36 @@ func (e *handlerEnv) login2(t *testing.T) string {
 	e.clock.t = e.clock.t.Add(time.Second)
 	return e.login(t)
 }
+
+// A link followed from another site must not spend the signed-in user's
+// failure budget, while codes typed on the page itself still count.
+func TestDeviceVerifyCrossSiteNavigationDoesNotSpendFailureBudget(t *testing.T) {
+	e := newExtEnv(t, false)
+	d := startDeviceHTTP(t, e)
+	uc := d["user_code"].(string)
+	c := e.login(t)
+
+	for _, site := range []string{"cross-site", "same-site"} {
+		for i := 0; i < 10; i++ {
+			rec := e.get("/oauth/device/verify?user_code=BCDF-GHJK", cookie(c), header("Sec-Fetch-Site", site))
+			if rec.Code != 200 || strings.Contains(rec.Body.String(), "csrf_token") {
+				t.Fatalf("%s navigation = %d %s, want the plain entry form", site, rec.Code, rec.Body.String())
+			}
+		}
+	}
+	// The budget is intact: the real code still works.
+	e.postForm("/oauth/device/verify", decideBody(uc, "approve", deviceForm(t, e, c, uc)), cookie(c))
+	e.clock.t = e.clock.t.Add(6 * time.Second)
+	if rec := pollHTTP(e, d["device_code"].(string)); rec.Code != 200 {
+		t.Fatalf("poll after approve = %d %s", rec.Code, rec.Body.String())
+	}
+
+	// Same-origin guesses are still limited.
+	c2 := e.login2(t)
+	for i := 0; i < 5; i++ {
+		e.get("/oauth/device/verify?user_code=BCDF-GHJK", cookie(c2), header("Sec-Fetch-Site", "same-origin"))
+	}
+	if rec := e.get("/oauth/device/verify?user_code=BCDF-GHJK", cookie(c2), header("Sec-Fetch-Site", "same-origin")); rec.Code != 429 {
+		t.Fatalf("sixth same-origin guess = %d, want 429", rec.Code)
+	}
+}

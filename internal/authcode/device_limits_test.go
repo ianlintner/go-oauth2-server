@@ -9,6 +9,7 @@ import (
 	"sync/atomic"
 	"testing"
 
+	"github.com/ianlintner/go-oauth2-server/internal/authcode"
 	"github.com/ianlintner/go-oauth2-server/internal/oauth"
 )
 
@@ -131,5 +132,54 @@ func TestDeviceDescribeReturnsClientAndScopeWithoutCounting(t *testing.T) {
 		if c.ID != "client-dev" || rec.Scope != "read" || rec.Status != oauth.DevicePending {
 			t.Fatalf("describe = %+v %+v", rec, c)
 		}
+	}
+}
+
+// flakyDeviceStore fails user-code lookups while down is set.
+type flakyDeviceStore struct {
+	oauth.Store
+	down *atomic.Bool
+}
+
+func (f flakyDeviceStore) DeviceCodes() oauth.DeviceCodeRepository {
+	return flakyDevices{DeviceCodeRepository: f.Store.DeviceCodes(), down: f.down}
+}
+
+type flakyDevices struct {
+	oauth.DeviceCodeRepository
+	down *atomic.Bool
+}
+
+func (f flakyDevices) GetByUserCodeHash(ctx context.Context, h string) (oauth.DeviceCode, error) {
+	if f.down.Load() {
+		return oauth.DeviceCode{}, errors.New("storage unavailable")
+	}
+	return f.DeviceCodeRepository.GetByUserCodeHash(ctx, h)
+}
+
+func TestDeviceDescribeStorageErrorDoesNotSpendFailureBudget(t *testing.T) {
+	var down atomic.Bool
+	e := newEnvWith(t, func(c *authcode.Config) {
+		c.MaxConcurrentHashes = -1
+		c.Store = flakyDeviceStore{Store: c.Store, down: &down}
+	})
+	addDeviceClients(t, e)
+	d := startDevice(t, e)
+	ctx := context.Background()
+
+	down.Store(true)
+	for i := 0; i < 10; i++ {
+		_, _, err := e.svc.DescribeDevice(ctx, e.user, d.UserCode)
+		var oe *oauth.Error
+		if !errors.As(err, &oe) || oe.HTTPStatus() == 429 {
+			t.Fatalf("lookup %d during outage = %v, want a server error that is not rate limiting", i, err)
+		}
+	}
+	down.Store(false)
+	if _, _, err := e.svc.DescribeDevice(ctx, e.user, d.UserCode); err != nil {
+		t.Fatalf("lookup after recovery: %v", err)
+	}
+	if err := e.svc.DecideDevice(ctx, e.user, d.UserCode, true); err != nil {
+		t.Fatalf("decide after recovery: %v", err)
 	}
 }

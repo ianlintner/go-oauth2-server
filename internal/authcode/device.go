@@ -207,6 +207,9 @@ func (s *Service) DescribeDevice(ctx context.Context, user oauth.User, userCode 
 	case errors.Is(err, oauth.ErrNotFound):
 		return oauth.DeviceCode{}, oauth.Client{}, bad
 	case err != nil:
+		// A storage failure says nothing about the code the user typed:
+		// give the slot back so an outage does not leave them locked out.
+		s.failures.release(user.ID)
 		return oauth.DeviceCode{}, oauth.Client{}, oauth.ServerError(err)
 	}
 	if rec.Consumed || !now.Before(rec.ExpiresAt) {
@@ -214,6 +217,7 @@ func (s *Service) DescribeDevice(ctx context.Context, user oauth.User, userCode 
 	}
 	client, err := s.store.Clients().Get(ctx, rec.ClientID)
 	if err != nil {
+		s.failures.release(user.ID)
 		return oauth.DeviceCode{}, oauth.Client{}, oauth.ServerError(err)
 	}
 	s.failures.release(user.ID)
@@ -247,6 +251,7 @@ func (s *Service) DecideDevice(ctx context.Context, user oauth.User, userCode st
 	case errors.Is(err, oauth.ErrNotFound), errors.Is(err, oauth.ErrAlreadyConsumed):
 		return bad()
 	case err != nil:
+		s.failures.release(user.ID) // storage failure, not a bad guess
 		return oauth.ServerError(err)
 	}
 	if !now.Before(rec.ExpiresAt) {

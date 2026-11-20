@@ -130,6 +130,12 @@ func (h *oauthHandlers) deviceVerify(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		code := r.URL.Query().Get("user_code")
+		// A link followed from another site must not look codes up on the
+		// user's behalf (that would spend their failure budget without their
+		// intent): show the plain entry form and let them type the code.
+		if site := r.Header.Get("Sec-Fetch-Site"); site == "cross-site" || site == "same-site" {
+			code = ""
+		}
 		if code == "" {
 			h.renderDevice(w, http.StatusOK, deviceView{})
 			return
