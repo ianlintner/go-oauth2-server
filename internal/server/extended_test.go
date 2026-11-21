@@ -60,6 +60,9 @@ func newExtEnvMode(t *testing.T, registration, conformance bool) *handlerEnv {
 	if err := st.Users().Create(ctx, oauth.User{ID: "user-1", Username: "alice", PasswordHash: hash("test-only-password")}); err != nil {
 		t.Fatal(err)
 	}
+	for _, id := range []string{"client-dev", "client-a", "client-enc"} {
+		approveClient(t, st, "user-1", id, "read")
+	}
 	clk := &hClock{t: time.Unix(1_700_000_000, 0).UTC()}
 	svc, err := authcode.New(authcode.Config{Store: st, Clock: clk, Random: rnd})
 	if err != nil {
@@ -69,11 +72,11 @@ func newExtEnvMode(t *testing.T, registration, conformance bool) *handlerEnv {
 	if err != nil {
 		t.Fatal(err)
 	}
-	h := server.New(server.Deps{
+	deps := server.Deps{
 		Service: svc, Sessions: sess, Issuer: issuer, Conformance: conformance,
 		RegistrationEnabled: registration, RegistrationScopes: []string{"openid", "read"},
-	})
-	return &handlerEnv{h: h, store: st, clock: clk, sess: sess}
+	}
+	return &handlerEnv{h: server.New(deps), store: st, clock: clk, deps: deps, sess: sess}
 }
 
 func (e *handlerEnv) postJSON(target, body string, opts ...reqOpt) *httptest.ResponseRecorder {

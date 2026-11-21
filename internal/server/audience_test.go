@@ -41,6 +41,7 @@ func addResourceClient(t *testing.T, e *tokenEnv) {
 	if err := e.store.Users().Create(context.Background(), oauth.User{ID: "user-1", Username: "alice", PasswordHash: pw}); err != nil {
 		t.Fatal(err)
 	}
+	approveClient(t, e.store, "user-1", "client-res")
 }
 
 func audOf(t *testing.T, e *tokenEnv, accessToken string) any {

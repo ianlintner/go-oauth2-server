@@ -114,6 +114,16 @@ func (h *oauthHandlers) authorize(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	if err := h.svc.CheckUserScope(user, req.Scope); err != nil {
+		h.redirectError(w, r, redirectURI, req.State, err)
+		return
+	}
+	// No code exists until the resource owner has approved this client for
+	// this scope (a stored approval, or the approval page).
+	if h.requireApproval(w, r, user, req.Client.ID, req.Scope, canonicalQuery(p), redirectURI, req.State) {
+		return
+	}
+
 	code, err := h.svc.IssueCode(r.Context(), req, user.ID)
 	if err != nil {
 		h.redirectError(w, r, redirectURI, req.State, err)
@@ -149,6 +159,20 @@ func (h *oauthHandlers) authorizePushed(w http.ResponseWriter, r *http.Request, 
 		}
 		w.Header().Set("Location", "/auth/login?return_query="+url.QueryEscape(url.Values{"client_id": {clientID}, "request_uri": {requestURI}}.Encode()))
 		w.WriteHeader(http.StatusFound)
+		return
+	}
+	// Approval is decided before the request is spent, so the approval detour
+	// does not burn it either.
+	pre, err := h.svc.PreviewPushed(r.Context(), clientID, requestURI)
+	if err != nil {
+		h.fail(w, r, err)
+		return
+	}
+	if err := h.svc.CheckUserScope(user, pre.Scope); err != nil {
+		h.fail(w, r, err)
+		return
+	}
+	if h.requireApproval(w, r, user, pre.Client.ID, pre.Scope, url.Values{"client_id": {clientID}, "request_uri": {requestURI}}.Encode(), "", "") {
 		return
 	}
 	req, err := h.svc.RedeemPushed(r.Context(), clientID, requestURI)

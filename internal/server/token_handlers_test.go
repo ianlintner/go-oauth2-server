@@ -325,6 +325,7 @@ func TestTokenEndpointIssuesSignedAccessToken(t *testing.T) {
 	}()}); err != nil {
 		t.Fatal(err)
 	}
+	approveClient(t, e.store, "user-1", "client-a")
 	c := e.login(t)
 	rec := e.get("/oauth/authorize?"+authQuery("client-a", callback, nil), cookie(c))
 	if rec.Code != http.StatusFound {

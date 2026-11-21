@@ -34,7 +34,19 @@ type handlerEnv struct {
 	h     http.Handler
 	store oauth.Store
 	clock *hClock
+	deps  server.Deps
 	sess  *session.Manager
+}
+
+// withoutLogin returns the same environment served with the login and
+// approval surface disabled (conformance mode off). Sessions made on e remain
+// valid because the session key is shared.
+func (e *handlerEnv) withoutLogin() *handlerEnv {
+	d := e.deps
+	d.Conformance = false
+	c := *e
+	c.h = server.New(d)
+	return &c
 }
 
 func newHandlerEnv(t *testing.T) *handlerEnv { return newEnvMode(t, true) }
@@ -69,6 +81,9 @@ func newEnvMode(t *testing.T, conformance bool) *handlerEnv {
 	if err := st.Users().Create(ctx, oauth.User{ID: "user-1", Username: "alice", PasswordHash: hash("test-only-password")}); err != nil {
 		t.Fatal(err)
 	}
+	for _, c := range clients {
+		approveClient(t, st, "user-1", c.ID, c.Scopes...)
+	}
 	clk := &hClock{t: time.Unix(1_700_000_000, 0).UTC()}
 	svc, err := authcode.New(authcode.Config{Store: st, Clock: clk, Random: rnd})
 	if err != nil {
@@ -78,8 +93,18 @@ func newEnvMode(t *testing.T, conformance bool) *handlerEnv {
 	if err != nil {
 		t.Fatal(err)
 	}
-	h := server.New(server.Deps{Service: svc, Sessions: sess, Issuer: issuer, Conformance: conformance})
-	return &handlerEnv{h: h, store: st, clock: clk}
+	deps := server.Deps{Service: svc, Sessions: sess, Issuer: issuer, Conformance: conformance}
+	return &handlerEnv{h: server.New(deps), store: st, clock: clk, deps: deps}
+}
+
+// approveClient stores an explicit approval of clientID by userID, the state a
+// previously consented (or seeded) resource owner is in.
+func approveClient(t *testing.T, st oauth.Store, userID, clientID string, scopes ...string) {
+	t.Helper()
+	err := st.Approvals().Put(context.Background(), oauth.Approval{UserID: userID, ClientID: clientID, Scopes: scopes, GrantedAt: time.Unix(1_700_000_000, 0).UTC()})
+	if err != nil {
+		t.Fatal(err)
+	}
 }
 
 type reqOpt func(*http.Request)

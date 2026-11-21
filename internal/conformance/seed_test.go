@@ -2,6 +2,7 @@ package conformance_test
 
 import (
 	"context"
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -262,5 +263,74 @@ func TestSeedRejectsUnsafeRedirectScheme(t *testing.T) {
 	}
 	if strings.Contains(err.Error(), "javascript") {
 		t.Fatalf("error must not echo the URI value: %v", err)
+	}
+}
+
+func TestSeededAutoApprovalIsHonoured(t *testing.T) {
+	seed, err := conformance.LoadSeed(writeSeed(t, contractExample))
+	if err != nil {
+		t.Fatal(err)
+	}
+	st, err := sqlite.Open(sqlite.MemoryDSN)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+	ctx := context.Background()
+	if err := conformance.Apply(ctx, st, oauth.CryptoRandom{}, seed); err != nil {
+		t.Fatal(err)
+	}
+	u, err := st.Users().GetByUsername(ctx, "alice")
+	if err != nil {
+		t.Fatal(err)
+	}
+	a, err := st.Approvals().Get(ctx, u.ID, "client-a")
+	if err != nil {
+		t.Fatalf("seeded auto_approve_clients entry has no approval row: %v", err)
+	}
+	if !a.Covers("openid read") || a.Covers("write") {
+		t.Fatalf("seeded scopes = %v, want the client's default openid read", a.Scopes)
+	}
+	// Only the listed client is approved: no row means no approval.
+	if _, err := st.Approvals().Get(ctx, u.ID, "spa"); !errors.Is(err, oauth.ErrNotFound) {
+		t.Fatalf("unlisted client has an approval: %v", err)
+	}
+}
+
+func TestSeededApprovalIsLimitedToUserScopes(t *testing.T) {
+	const body = `
+issuer: http://localhost:8080
+clients:
+  - client_id: c1
+    public: true
+    token_endpoint_auth_method: none
+    redirect_uris: [https://client.example/cb]
+    scopes: [openid, read, write]
+users:
+  - username: limited
+    password: test-only-password
+    scopes: [read]
+    auto_approve_clients: [c1]
+`
+	seed, err := conformance.LoadSeed(writeSeed(t, body))
+	if err != nil {
+		t.Fatal(err)
+	}
+	st, err := sqlite.Open(sqlite.MemoryDSN)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+	ctx := context.Background()
+	if err := conformance.Apply(ctx, st, oauth.CryptoRandom{}, seed); err != nil {
+		t.Fatal(err)
+	}
+	u, _ := st.Users().GetByUsername(ctx, "limited")
+	a, err := st.Approvals().Get(ctx, u.ID, "c1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !a.Covers("read") || a.Covers("write") || a.Covers("openid") {
+		t.Fatalf("seeded scopes = %v, want only read", a.Scopes)
 	}
 }
