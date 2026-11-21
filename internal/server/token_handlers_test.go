@@ -29,12 +29,23 @@ type tokenEnv struct {
 	tokens *token.Service
 }
 
-func newTokenEnv(t *testing.T) *tokenEnv { return newTokenEnvWrapped(t, nil) }
+func newTokenEnv(t *testing.T) *tokenEnv {
+	return newTokenEnvWithReplay(t, func(clk oauth.Clock) dpop.ReplayStore { return dpop.NewMemoryReplayStore(clk, 1000) })
+}
+
+// newTokenEnvWithReplay is newTokenEnv with a caller-chosen DPoP replay store.
+func newTokenEnvWithReplay(t *testing.T, replay func(oauth.Clock) dpop.ReplayStore) *tokenEnv {
+	return newTokenEnvFull(t, nil, replay)
+}
 
 // newTokenEnvWrapped is newTokenEnv with the store the services see optionally
 // wrapped (to inject a hook at a precise point); the env's own store stays
 // the raw one.
 func newTokenEnvWrapped(t *testing.T, wrap func(oauth.Store) oauth.Store) *tokenEnv {
+	return newTokenEnvFull(t, wrap, func(clk oauth.Clock) dpop.ReplayStore { return dpop.NewMemoryReplayStore(clk, 1000) })
+}
+
+func newTokenEnvFull(t *testing.T, wrap func(oauth.Store) oauth.Store, replay func(oauth.Clock) dpop.ReplayStore) *tokenEnv {
 	t.Helper()
 	st, err := sqlite.Open(sqlite.MemoryDSN)
 	if err != nil {
@@ -100,7 +111,7 @@ func newTokenEnvWrapped(t *testing.T, wrap func(oauth.Store) oauth.Store) *token
 	if err != nil {
 		t.Fatal(err)
 	}
-	proofs := dpop.NewVerifier(dpop.Config{Clock: clk, Replay: dpop.NewMemoryReplayStore(clk, 1000)})
+	proofs := dpop.NewVerifier(dpop.Config{Clock: clk, Replay: replay(clk)})
 	h := server.New(server.Deps{Service: svc, Sessions: sess, Issuer: issuer, Conformance: true, Tokens: tokens, DPoP: proofs})
 	env := &handlerEnv{h: h, store: st, clock: clk}
 	return &tokenEnv{handlerEnv: env, tokens: tokens}

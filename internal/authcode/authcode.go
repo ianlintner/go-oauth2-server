@@ -370,6 +370,12 @@ func (s *Service) Token(ctx context.Context, authorization string, p oauth.Param
 			return TokenResponse{}, oauth.InvalidRequest("DPoP is not supported for this client")
 		}
 	}
+	// Record the DPoP proof's jti only now that the client has authenticated
+	// and may use this grant (RFC 9449 §11.1 replay handling), so callers that
+	// fail earlier cannot consume replay-store capacity.
+	if err := oauth.RecordDPoPProof(ctx); err != nil {
+		return TokenResponse{}, err
+	}
 
 	switch grant {
 	case GrantAuthorizationCode:
