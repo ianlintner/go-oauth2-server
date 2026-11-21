@@ -17,6 +17,11 @@ Go port of [`rust-oauth2-server`](https://github.com/ianlintner/rust-oauth2-serv
 - `internal/secret` — argon2id (PHC) hashing for client secrets and user passwords.
 - `internal/conformance` — the shared contract's test-mode SUT seed: strict validation + transactional application, reachable only under `OAUTH2_CONFORMANCE_MODE=1`.
 
+## Endpoint access notes
+
+- `/oauth/introspect` requires an authenticated (confidential) client; a public client identified only by `client_id` receives `401 invalid_client`, and discovery no longer lists `none` for introspection. `/oauth/revoke` still accepts public clients (RFC 7009 §2.1).
+- `/oauth/userinfo` serves only tokens carrying the `openid` scope; other tokens receive `403 insufficient_scope`. The client credentials grant refuses the `openid` scope, so UserInfo never returns a client identifier as `sub`.
+
 ## What is deliberately not implemented
 
 - Implicit and ROPC grants (rejected), social login and administrative APIs; no OpenTelemetry span export or collector. Only the profiles named in `conformance.yaml` are exercised against the pinned contract, not the unfinished `operations` profile.

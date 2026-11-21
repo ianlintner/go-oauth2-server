@@ -1,6 +1,7 @@
 package server_test
 
 import (
+	"context"
 	"encoding/base64"
 	"encoding/json"
 	"net/http"
@@ -13,6 +14,7 @@ import (
 	"github.com/ianlintner/go-oauth2-server/internal/dpop"
 	"github.com/ianlintner/go-oauth2-server/internal/dpop/dpoptest"
 	"github.com/ianlintner/go-oauth2-server/internal/oauth"
+	"github.com/ianlintner/go-oauth2-server/internal/token"
 )
 
 // These tests pin the sender-constrained wire behavior (RFC 9449) for the
@@ -43,6 +45,18 @@ func (e *tokenEnv) dpopToken(t *testing.T, k dpoptest.Key) string {
 		t.Fatalf("token_type = %v, want DPoP", body["token_type"])
 	}
 	return body["access_token"].(string)
+}
+
+// dpopUserToken issues a user-delegated, openid-scoped token bound to k.
+func (e *tokenEnv) dpopUserToken(t *testing.T, k dpoptest.Key) string {
+	t.Helper()
+	at, err := e.tokens.Issue(context.Background(), token.IssueParams{
+		ClientID: "client-a", Subject: "user-1", Scope: "openid", Audience: []string{issuer}, JKT: k.JKT(t),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return at.Value
 }
 
 func jwtPayload(t *testing.T, tok string) map[string]any {
@@ -155,18 +169,18 @@ func TestTokenEndpointRefusesDPoPForPublicClients(t *testing.T) {
 func TestUserInfoAcceptsABoundTokenWithAMatchingProof(t *testing.T) {
 	e := newTokenEnv(t)
 	k := dpoptest.NewKey(t)
-	at := e.dpopToken(t, k)
+	at := e.dpopUserToken(t, k)
 	s := e.spec("GET", userinfoEndpoint)
 	s.AccessToken = at
 	rec := e.get("/oauth/userinfo", header("Authorization", "DPoP "+at), header("DPoP", k.Proof(t, s)))
-	if rec.Code != http.StatusOK || jsonBody(t, rec)["sub"] != "client-cc" {
+	if rec.Code != http.StatusOK || jsonBody(t, rec)["sub"] != "user-1" {
 		t.Fatalf("status = %d %q", rec.Code, rec.Body.String())
 	}
 }
 
 func TestUserInfoRejectsBoundTokenPresentedAsBearer(t *testing.T) {
 	e := newTokenEnv(t)
-	at := e.dpopToken(t, dpoptest.NewKey(t))
+	at := e.dpopUserToken(t, dpoptest.NewKey(t))
 	rec := e.get("/oauth/userinfo", bearerAuth(at))
 	if rec.Code != http.StatusUnauthorized || jsonBody(t, rec)["error"] != "invalid_token" {
 		t.Fatalf("status = %d %q", rec.Code, rec.Body.String())
@@ -193,7 +207,7 @@ func TestUserInfoRejectsBadResourceProofs(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			e := newTokenEnv(t)
-			at := e.dpopToken(t, k)
+			at := e.dpopUserToken(t, k)
 			s := e.spec("GET", userinfoEndpoint)
 			s.AccessToken = at
 			tc.mut(at, &s)
@@ -219,13 +233,13 @@ func TestUserInfoRejectsBadResourceProofs(t *testing.T) {
 func TestUserInfoRejectsMissingProofAndUnboundTokenUnderDPoPScheme(t *testing.T) {
 	e := newTokenEnv(t)
 	k := dpoptest.NewKey(t)
-	at := e.dpopToken(t, k)
+	at := e.dpopUserToken(t, k)
 	if rec := e.get("/oauth/userinfo", header("Authorization", "DPoP "+at)); rec.Code != http.StatusUnauthorized {
 		t.Fatalf("no proof: status = %d", rec.Code)
 	}
 	// A plain bearer token must not be upgradeable by attaching a DPoP scheme
 	// and an attacker-chosen key.
-	plain := e.issueAccessToken(t, "client-a", "user-1")
+	plain := e.issueAccessTokenScope(t, "client-a", "user-1", "openid")
 	s := e.spec("GET", userinfoEndpoint)
 	s.AccessToken = plain.Value
 	rec := e.get("/oauth/userinfo", header("Authorization", "DPoP "+plain.Value), header("DPoP", k.Proof(t, s)))
@@ -237,7 +251,7 @@ func TestUserInfoRejectsMissingProofAndUnboundTokenUnderDPoPScheme(t *testing.T)
 func TestUserInfoRejectsAReplayedResourceProof(t *testing.T) {
 	e := newTokenEnv(t)
 	k := dpoptest.NewKey(t)
-	at := e.dpopToken(t, k)
+	at := e.dpopUserToken(t, k)
 	s := e.spec("GET", userinfoEndpoint)
 	s.AccessToken = at
 	proof := k.Proof(t, s)

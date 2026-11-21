@@ -409,7 +409,7 @@ func (s *Service) redeemCode(ctx context.Context, client oauth.Client, p oauth.P
 	if err != nil {
 		return TokenResponse{}, err
 	}
-	resp, err := s.issueTokens(ctx, client.ID, rec.UserID, rec.Scope, audience, true, "")
+	resp, err := s.issueTokens(ctx, client.ID, rec.UserID, rec.Scope, audience, true, "", true)
 	if err != nil {
 		return TokenResponse{}, err
 	}
@@ -442,13 +442,18 @@ func (s *Service) clientCredentials(ctx context.Context, client oauth.Client, p 
 	if err != nil {
 		return TokenResponse{}, err
 	}
+	// There is no user behind this grant, so the OpenID scope has no meaning
+	// here; refusing it keeps UserInfo from vouching for a client identity.
+	if hasScope(scope, "openid") {
+		return TokenResponse{}, oauth.InvalidScope("the openid scope requires a user")
+	}
 	// The subject of a machine-to-machine token is the client itself (RFC 9068
 	// §2.2); no refresh token is issued for this grant.
 	audience, err := s.validateResource(client, p.Get("resource"))
 	if err != nil {
 		return TokenResponse{}, err
 	}
-	return s.issueTokens(ctx, client.ID, client.ID, scope, audience, false, "")
+	return s.issueTokens(ctx, client.ID, client.ID, scope, audience, false, "", false)
 }
 
 // refreshToken handles grant_type=refresh_token (RFC 6749 §6): authenticates
@@ -510,7 +515,7 @@ func (s *Service) refreshToken(ctx context.Context, client oauth.Client, p oauth
 	// The replacement shares the rotated token's family so a replayed member
 	// revokes the whole lineage, including this new token (RFC 6819 §5.2.2.3 /
 	// RFC 9700 §2.1.5 cascade revocation).
-	return s.issueTokens(ctx, client.ID, rec.UserID, scope, audience, true, rotated.FamilyID)
+	return s.issueTokens(ctx, client.ID, rec.UserID, scope, audience, true, rotated.FamilyID, true)
 }
 
 // issueTokens mints an access token and, when withRefresh is true, a refresh
@@ -518,11 +523,11 @@ func (s *Service) refreshToken(ctx context.Context, client oauth.Client, p oauth
 // token joins (empty mints a fresh family). When the Service has a token.Service
 // it uses it for signed RFC 9068 access tokens; otherwise it falls back to the
 // legacy opaque placeholder so the pre-lifecycle contract tests keep passing.
-func (s *Service) issueTokens(ctx context.Context, clientID, subject, scope, audience string, withRefresh bool, familyID string) (TokenResponse, error) {
+func (s *Service) issueTokens(ctx context.Context, clientID, subject, scope, audience string, withRefresh bool, familyID string, delegated bool) (TokenResponse, error) {
 	resp := TokenResponse{TokenType: "Bearer", Scope: scope}
 
 	if s.tokens != nil {
-		at, err := s.tokens.Issue(ctx, token.IssueParams{ClientID: clientID, Subject: subject, Scope: scope, Audience: []string{audience}, JKT: oauth.DPoPKey(ctx)})
+		at, err := s.tokens.Issue(ctx, token.IssueParams{ClientID: clientID, Subject: subject, Scope: scope, Audience: []string{audience}, JKT: oauth.DPoPKey(ctx), UserDelegated: delegated})
 		if err != nil {
 			return TokenResponse{}, err
 		}

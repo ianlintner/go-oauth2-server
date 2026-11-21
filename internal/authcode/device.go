@@ -291,5 +291,5 @@ func (s *Service) deviceToken(ctx context.Context, client oauth.Client, p oauth.
 		}
 		return TokenResponse{}, oauth.ServerError(err)
 	}
-	return s.issueTokens(ctx, client.ID, rec.UserID, rec.Scope, audience, grantAllowed(client, GrantRefreshToken), "")
+	return s.issueTokens(ctx, client.ID, rec.UserID, rec.Scope, audience, grantAllowed(client, GrantRefreshToken), "", true)
 }
