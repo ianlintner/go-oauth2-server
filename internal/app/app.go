@@ -148,7 +148,7 @@ func Run(ctx context.Context, opts Options) error {
 		closeListener()
 		return fmt.Errorf("authorization service: %w", err)
 	}
-	sessions, err := session.New([]byte(cfg.SessionSecret), oauth.SystemClock{}, cfg.CookieSecure)
+	sessions, err := session.New([]byte(cfg.SessionSecret), oauth.SystemClock{}, cfg.CookieSecure, st.Sessions())
 	if err != nil {
 		closeListener()
 		return fmt.Errorf("session manager: %w", err)

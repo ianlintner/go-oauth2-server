@@ -91,7 +91,7 @@ func newTokenEnvWithReplay(t *testing.T, replay func(oauth.Clock) dpop.ReplaySto
 	if err != nil {
 		t.Fatal(err)
 	}
-	sess, err := session.New([]byte("0123456789abcdef0123456789abcdef"), clk, true)
+	sess, err := session.New([]byte("0123456789abcdef0123456789abcdef"), clk, true, st.Sessions())
 	if err != nil {
 		t.Fatal(err)
 	}
