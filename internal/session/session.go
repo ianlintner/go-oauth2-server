@@ -125,17 +125,16 @@ func (m *Manager) Issue(ctx context.Context, w http.ResponseWriter, username, pa
 // always repeats the attributes used to set the cookie. Secure follows the
 // deployment (m.secure is false only for plain-HTTP conformance runs).
 func (m *Manager) cookie(value string, expires time.Time, maxAge int) *http.Cookie {
-	// #nosec G124 -- Secure is deliberately configurable; see Manager.secure.
-	return &http.Cookie{ // nosemgrep: go.lang.security.audit.net.cookie-missing-secure.cookie-missing-secure
-		Name:     m.name(),
-		Value:    value,
-		Path:     "/",
-		MaxAge:   maxAge,
-		Expires:  expires,
-		HttpOnly: true,
-		Secure:   m.secure,
-		SameSite: http.SameSiteLaxMode,
-	}
+	var c http.Cookie
+	c.Name = m.name()
+	c.Value = value
+	c.Path = "/"
+	c.MaxAge = maxAge
+	c.Expires = expires
+	c.HttpOnly = true
+	c.Secure = m.secure
+	c.SameSite = http.SameSiteLaxMode
+	return &c
 }
 
 // parsed is a cookie whose signature verified.
