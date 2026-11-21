@@ -125,6 +125,7 @@ func (m *Manager) Issue(ctx context.Context, w http.ResponseWriter, username, pa
 // always repeats the attributes used to set the cookie. Secure follows the
 // deployment (m.secure is false only for plain-HTTP conformance runs).
 func (m *Manager) cookie(value string, expires time.Time, maxAge int) *http.Cookie {
+	// #nosec G124 -- Secure follows the deployment (Manager.secure).
 	var c http.Cookie
 	c.Name = m.name()
 	c.Value = value
