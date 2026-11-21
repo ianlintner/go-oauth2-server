@@ -73,6 +73,34 @@ are not claimed (see "Not implemented").
    implemented. Without a nonce a client can pre-generate proofs with a chosen
    future `iat` within the 30 s skew; the exposure is bounded by that window.
 
+## Upgrade and rollback (refresh-token binding)
+
+The binding is enforced by the token endpoint code, not by the database. A
+token endpoint built before `refresh_tokens.dpop_jkt` existed ignores the
+column: sharing the migrated database, it accepts a bound public-client
+refresh token **without a proof** and writes an unbound replacement, which
+silently removes the binding for that family. So:
+
+- **Rolling upgrades are not supported for this change.** Drain every old
+  token endpoint (no instance running the previous build may share the
+  database) before any DPoP-bound public-client token is issued. The
+  migration alone is safe to apply early; enabling DPoP for public clients is
+  what must wait. There is no issuance gate in the server: if instances cannot
+  be drained first, do not let public clients present DPoP proofs (for example
+  by routing the `DPoP` header away from the token endpoint) until every
+  instance runs this build.
+- **Rollback requires revoking bound families first.** Before reverting to a
+  build that predates this change, revoke every outstanding refresh token with
+  a non-empty `dpop_jkt` (for example
+  `DELETE FROM refresh_tokens WHERE dpop_jkt <> ''` — rows in
+  `refresh_families` for those families may stay) so the old build cannot
+  rotate them into unbound tokens. Affected public clients must re-authorize.
+  Leave the `dpop_jkt` column in place; the old build ignores it.
+- A mixed-version window that has already happened cannot be detected from the
+  data: an unbound replacement looks like a token legitimately issued without
+  DPoP. If one occurred, revoke the public clients' refresh tokens issued
+  during it.
+
 ## Not implemented (separate cards)
 
 - RFC 8705 mTLS: certificate-bound tokens, `tls_client_auth`, metadata. The
