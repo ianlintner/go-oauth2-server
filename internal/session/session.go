@@ -117,16 +117,25 @@ func (m *Manager) Issue(ctx context.Context, w http.ResponseWriter, username, pa
 	}
 	// username is last because it may itself contain the separator.
 	payload := b64.EncodeToString([]byte(strconv.FormatInt(exp.Unix(), 10) + "|" + sid + "|" + m.credentialTag(passwordHash) + "|" + username))
-	http.SetCookie(w, &http.Cookie{
+	http.SetCookie(w, m.cookie(payload+"."+m.sign(payload), exp, 0))
+	return nil
+}
+
+// cookie builds the session cookie. Issue and End both use it so that a clear
+// always repeats the attributes used to set the cookie. Secure follows the
+// deployment (m.secure is false only for plain-HTTP conformance runs).
+func (m *Manager) cookie(value string, expires time.Time, maxAge int) *http.Cookie {
+	// #nosec G124 -- Secure is deliberately configurable; see Manager.secure.
+	return &http.Cookie{ // nosemgrep: go.lang.security.audit.net.cookie-missing-secure.cookie-missing-secure
 		Name:     m.name(),
-		Value:    payload + "." + m.sign(payload),
+		Value:    value,
 		Path:     "/",
-		Expires:  exp,
+		MaxAge:   maxAge,
+		Expires:  expires,
 		HttpOnly: true,
 		Secure:   m.secure,
 		SameSite: http.SameSiteLaxMode,
-	})
-	return nil
+	}
 }
 
 // parsed is a cookie whose signature verified.
@@ -197,16 +206,7 @@ func (m *Manager) End(w http.ResponseWriter, r *http.Request) error {
 	if p, ok := m.parse(r); ok {
 		err = m.store.Revoke(r.Context(), recordID(p.sid), m.clock.Now())
 	}
-	http.SetCookie(w, &http.Cookie{
-		Name:     m.name(),
-		Value:    "",
-		Path:     "/",
-		MaxAge:   -1,
-		Expires:  time.Unix(0, 0),
-		HttpOnly: true,
-		Secure:   m.secure,
-		SameSite: http.SameSiteLaxMode,
-	})
+	http.SetCookie(w, m.cookie("", time.Unix(0, 0), -1))
 	return err
 }
 
