@@ -80,7 +80,7 @@ are not claimed (see "Not implemented").
 
 ## Conformance status
 
-Pinned contract: `b968cb1`. Of the 35 `sender-constrained` scenarios, 7
+Pinned contract: `771d0d6`. Of the 35 `sender-constrained` scenarios, 7
 are `stable` and exercised against this server in `scripts/conformance-run.sh`:
 `dpop.token-type-dpop`, `jti-required`, `jti-replay`, `htm-binding`,
 `htu-binding`, `typ-header`, `iat-stale` — all pass. The rest are `draft`
