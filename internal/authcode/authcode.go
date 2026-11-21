@@ -308,6 +308,36 @@ func hashCode(code string) string {
 	return hex.EncodeToString(sum[:])
 }
 
+// codeFamilyID and codeJTI derive the refresh-token family and the access
+// token jti of a code redemption from the code's hash. Neither is a secret
+// (the refresh token value and the JWT signature are), and deriving them
+// lets a replay of the code find and revoke exactly what it issued without
+// a persisted code→token link.
+func codeFamilyID(codeHash string) string {
+	sum := sha256.Sum256([]byte("family:" + codeHash))
+	return hex.EncodeToString(sum[:16])
+}
+
+func codeJTI(codeHash string) string {
+	sum := sha256.Sum256([]byte("jti:" + codeHash))
+	return hex.EncodeToString(sum[:16])
+}
+
+// revokeCodeGrant revokes the refresh-token family and the access token a
+// redeemed code produced. A storage failure is reported (server_error)
+// rather than swallowed, so a replay never looks cleanly refused while the
+// issued tokens are still live.
+func (s *Service) revokeCodeGrant(ctx context.Context, codeHash string) error {
+	now := s.clock.Now()
+	if _, err := s.store.RefreshTokens().RevokeFamily(ctx, codeFamilyID(codeHash), now); err != nil {
+		return oauth.ServerError(err)
+	}
+	if _, err := s.store.AccessTokens().Revoke(ctx, codeJTI(codeHash), now); err != nil {
+		return oauth.ServerError(err)
+	}
+	return nil
+}
+
 // ---- token endpoint ----
 
 // Token handles a token request. authorization is the raw Authorization
@@ -381,9 +411,15 @@ func (s *Service) redeemCode(ctx context.Context, client oauth.Client, p oauth.P
 	rec, err := s.store.AuthCodes().Consume(ctx, hashCode(code), now)
 	switch {
 	case errors.Is(err, oauth.ErrNotFound), errors.Is(err, oauth.ErrAlreadyConsumed):
-		// Replay or fabricated code. (RFC 9700 §2.1.1 asks that tokens issued
-		// from a replayed code be revoked; access tokens are not persisted in
-		// this slice, so there is nothing to revoke yet.)
+		// RFC 9700 §2.1.1: a replayed code revokes the tokens already issued
+		// from it. A code that never existed issued nothing, so only a
+		// genuinely consumed code triggers revocation (this also keeps
+		// fabricated codes from writing revocation markers).
+		if errors.Is(err, oauth.ErrAlreadyConsumed) {
+			if rerr := s.revokeCodeGrant(ctx, hashCode(code)); rerr != nil {
+				return TokenResponse{}, rerr
+			}
+		}
 		return TokenResponse{}, oauth.InvalidGrant("authorization code is invalid, expired or already used")
 	case err != nil:
 		return TokenResponse{}, oauth.ServerError(err)
@@ -409,7 +445,7 @@ func (s *Service) redeemCode(ctx context.Context, client oauth.Client, p oauth.P
 	if err != nil {
 		return TokenResponse{}, err
 	}
-	resp, err := s.issueTokens(ctx, client.ID, rec.UserID, rec.Scope, audience, true, "")
+	resp, err := s.issueTokens(ctx, client.ID, rec.UserID, rec.Scope, audience, true, codeFamilyID(rec.CodeHash), codeJTI(rec.CodeHash))
 	if err != nil {
 		return TokenResponse{}, err
 	}
@@ -448,7 +484,7 @@ func (s *Service) clientCredentials(ctx context.Context, client oauth.Client, p 
 	if err != nil {
 		return TokenResponse{}, err
 	}
-	return s.issueTokens(ctx, client.ID, client.ID, scope, audience, false, "")
+	return s.issueTokens(ctx, client.ID, client.ID, scope, audience, false, "", "")
 }
 
 // refreshToken handles grant_type=refresh_token (RFC 6749 §6): authenticates
@@ -510,7 +546,7 @@ func (s *Service) refreshToken(ctx context.Context, client oauth.Client, p oauth
 	// The replacement shares the rotated token's family so a replayed member
 	// revokes the whole lineage, including this new token (RFC 6819 §5.2.2.3 /
 	// RFC 9700 §2.1.5 cascade revocation).
-	return s.issueTokens(ctx, client.ID, rec.UserID, scope, audience, true, rotated.FamilyID)
+	return s.issueTokens(ctx, client.ID, rec.UserID, scope, audience, true, rotated.FamilyID, "")
 }
 
 // issueTokens mints an access token and, when withRefresh is true, a refresh
@@ -518,11 +554,11 @@ func (s *Service) refreshToken(ctx context.Context, client oauth.Client, p oauth
 // token joins (empty mints a fresh family). When the Service has a token.Service
 // it uses it for signed RFC 9068 access tokens; otherwise it falls back to the
 // legacy opaque placeholder so the pre-lifecycle contract tests keep passing.
-func (s *Service) issueTokens(ctx context.Context, clientID, subject, scope, audience string, withRefresh bool, familyID string) (TokenResponse, error) {
+func (s *Service) issueTokens(ctx context.Context, clientID, subject, scope, audience string, withRefresh bool, familyID, jti string) (TokenResponse, error) {
 	resp := TokenResponse{TokenType: "Bearer", Scope: scope}
 
 	if s.tokens != nil {
-		at, err := s.tokens.Issue(ctx, token.IssueParams{ClientID: clientID, Subject: subject, Scope: scope, Audience: []string{audience}, JKT: oauth.DPoPKey(ctx)})
+		at, err := s.tokens.Issue(ctx, token.IssueParams{ClientID: clientID, Subject: subject, Scope: scope, Audience: []string{audience}, JKT: oauth.DPoPKey(ctx), JTI: jti})
 		if err != nil {
 			return TokenResponse{}, err
 		}
