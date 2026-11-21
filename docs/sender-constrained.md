@@ -35,13 +35,21 @@ are not claimed (see "Not implemented").
 
 ## Decisions that need the owner's review
 
-1. **Public clients cannot use DPoP.** RFC 9449 §5 requires a public client's
-   refresh token to be bound to the proof key. That binding needs a schema
-   change and is deferred, so a DPoP request from a public client is refused
-   (`invalid_request`) instead of issuing a bound access token beside an
-   unbound refresh token. Confidential clients' refresh tokens stay unbound
-   (permitted by §5) and a refresh yields an access token bound to the proof
-   presented with the refresh request.
+1. **Public clients' refresh tokens are bound to the DPoP key (§5).** When a
+   public client redeems a code (or device code) with a DPoP proof, the proof
+   key's RFC 7638 thumbprint is stored on the refresh token
+   (`refresh_tokens.dpop_jkt`). A refresh must carry a proof from the same
+   key, else `invalid_grant`; the check runs before rotation so a thief who
+   holds the token but not the key cannot burn it. Rotation carries the
+   binding forward along the family, and replay/family revocation behave as
+   before. A public client's token with no recorded key (issued without DPoP)
+   accepts only a refresh *without* a proof, so a stolen unbound token cannot
+   be captured onto an attacker's key. Confidential clients' refresh tokens
+   stay unbound (permitted by §5, they authenticate) and a refresh yields an
+   access token bound to the proof presented with the refresh request.
+   Migration `dpop_jkt` defaults to `''` (unbound) and there is no backfill:
+   a public client's refresh token cannot predate DPoP support, so no
+   existing row needed binding.
 2. **Replay store is in-memory, bounded (100 000 entries) and per process.**
    A restart or a second instance forgets seen proofs, so a proof captured
    within its ~90 s window can be replayed across a restart/instance. This is
@@ -69,8 +77,8 @@ are not claimed (see "Not implemented").
 
 - RFC 8705 mTLS: certificate-bound tokens, `tls_client_auth`, metadata. The
   contract's `mtls-request` helper does not exist in the runner yet either.
-- DPoP server nonces, persistent/shared replay store, refresh-token binding for
-  public clients, `dpop_jkt` at the authorization endpoint / PAR.
+- DPoP server nonces, persistent/shared replay store, `dpop_jkt` at the
+  authorization endpoint / PAR.
 - RFC 9700 controls beyond those already present: in-process per-client-id
   failure budgets and a concurrent-hash bound now exist (README, "Request
   throttling"), but the contract does not express throttling, so the runner has

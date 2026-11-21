@@ -72,7 +72,11 @@ type RefreshToken struct {
 	Scope     string
 	// Audience is the resource the family is bound to; it never widens on
 	// rotation. "" for a record written before audiences existed.
-	Audience  string
+	Audience string
+	// DPoPJKT is the RFC 7638 thumbprint of the DPoP proof key a public
+	// client's refresh token is bound to (RFC 9449 §5); "" means unbound.
+	// It is carried unchanged along a rotation family.
+	DPoPJKT   string
 	ExpiresAt time.Time
 }
 
