@@ -72,6 +72,11 @@ func (h *oauthHandlers) userinfo(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if dpopScheme {
+		// Resource-side nonces are opt-in (OAUTH2_DPOP_NONCE=all); the fresh
+		// value rides on both the success and the use_dpop_nonce response.
+		if h.nonceResources {
+			h.setNonce(w)
+		}
 		code := h.checkResourceProof(r, token, verified.JKT)
 		if code != "" {
 			dpopChallenge(w, code)
