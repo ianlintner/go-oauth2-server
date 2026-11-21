@@ -11,7 +11,9 @@ import (
 	"testing"
 	"time"
 
+	"github.com/ianlintner/go-oauth2-server/internal/dpop"
 	"github.com/ianlintner/go-oauth2-server/internal/dpop/dpoptest"
+	"github.com/ianlintner/go-oauth2-server/internal/oauth"
 	"github.com/ianlintner/go-oauth2-server/internal/token"
 )
 
@@ -283,3 +285,51 @@ func TestMetadataAdvertisesDPoPSigningAlgorithms(t *testing.T) {
 }
 
 var _ = httptest.NewRecorder
+
+func smallReplayEnv(t *testing.T) *tokenEnv {
+	t.Helper()
+	return newTokenEnvWithReplay(t, func(clk oauth.Clock) dpop.ReplayStore { return dpop.NewMemoryReplayStore(clk, 1) })
+}
+
+func TestTokenEndpointDoesNotRecordProofsForUnauthenticatedCallers(t *testing.T) {
+	e := smallReplayEnv(t)
+	// Repeated requests with distinct valid proofs and bad credentials must
+	// each be answered as a failed client authentication; none may fill the
+	// (capacity 1) replay store or be refused for lack of room.
+	for i := 0; i < 3; i++ {
+		k := dpoptest.NewKey(t)
+		rec := e.postForm("/oauth/token", ccForm(), basic("client-cc", "wrong-secret"),
+			header("DPoP", k.Proof(t, e.spec("POST", tokenEndpoint))))
+		if rec.Code != http.StatusUnauthorized {
+			t.Fatalf("request %d: status = %d %q, want 401", i, rec.Code, rec.Body.String())
+		}
+		if got := jsonBody(t, rec)["error"]; got != "invalid_client" {
+			t.Fatalf("request %d: error = %v, want invalid_client", i, got)
+		}
+	}
+}
+
+func TestDpopStoreFullRefusesAnonymousCallerBeforeClientAuthentication(t *testing.T) {
+	e := smallReplayEnv(t)
+	rec := e.postForm("/oauth/token", ccForm(), basic("client-cc", "wrong-secret"),
+		header("DPoP", dpoptest.NewKey(t).Proof(t, e.spec("POST", tokenEndpoint))))
+	if rec.Code != http.StatusUnauthorized {
+		t.Fatalf("unauthenticated request = %d %q, want 401", rec.Code, rec.Body.String())
+	}
+	// The single replay slot is still free for an authenticated caller.
+	rec = e.postForm("/oauth/token", ccForm(), basic("client-cc", "test-only-secret"),
+		header("DPoP", dpoptest.NewKey(t).Proof(t, e.spec("POST", tokenEndpoint))))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("authenticated request = %d %q, want 200", rec.Code, rec.Body.String())
+	}
+	// An authenticated caller's proof is still recorded: replay is refused.
+	k := dpoptest.NewKey(t)
+	proof := k.Proof(t, e.spec("POST", tokenEndpoint))
+	e2 := newTokenEnv(t)
+	for i, want := range []int{http.StatusOK, http.StatusBadRequest} {
+		rec = e2.postForm("/oauth/token", ccForm(), basic("client-cc", "test-only-secret"), header("DPoP", proof))
+		if rec.Code != want {
+			t.Fatalf("replay step %d = %d %q, want %d", i, rec.Code, rec.Body.String(), want)
+		}
+	}
+}

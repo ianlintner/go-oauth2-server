@@ -35,7 +35,9 @@ func (h *oauthHandlers) requestURL(r *http.Request) string {
 }
 
 // withTokenEndpointProof verifies the DPoP header of a token request (RFC 9449
-// §5) and returns a context carrying the proof key, so issuance binds the
+// §5) without recording its jti (the token service does that after client
+// authentication, via oauth.RecordDPoPProof) and returns a context carrying
+// the proof key, so issuance binds the
 // access token to it. A request without a DPoP header, or a server without a
 // verifier, proceeds as an ordinary bearer request. Multiple DPoP headers are
 // an error (§4.3 point 1): which one to honor would otherwise be ambiguous.
@@ -47,11 +49,20 @@ func (h *oauthHandlers) withTokenEndpointProof(ctx context.Context, r *http.Requ
 	if len(proofs) != 1 {
 		return ctx, oauth.InvalidDPoPProof()
 	}
-	jkt, err := h.dpop.Verify(ctx, dpop.Request{Proof: proofs[0], Method: r.Method, URL: h.requestURL(r)})
+	checked, err := h.dpop.Check(dpop.Request{Proof: proofs[0], Method: r.Method, URL: h.requestURL(r)})
 	if err != nil {
 		return ctx, h.proofError(err)
 	}
-	return oauth.WithDPoPKey(ctx, jkt), nil
+	// Recording the jti is deferred to the token service, which runs it once
+	// the client has authenticated: an unauthenticated caller must not be able
+	// to spend replay-store capacity shared with every other client.
+	ctx = oauth.WithDPoPRecorder(ctx, func() error {
+		if err := h.dpop.Record(checked); err != nil {
+			return h.proofError(err)
+		}
+		return nil
+	})
+	return oauth.WithDPoPKey(ctx, checked.JKT), nil
 }
 
 // proofError maps a verifier failure to the protocol error. A rejected proof
