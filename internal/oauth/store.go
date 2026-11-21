@@ -151,6 +151,28 @@ type UserRepository interface {
 	GetByUsername(ctx context.Context, username string) (User, error)
 }
 
+// Session is a server-side record of one resource-owner login. ID is an opaque
+// identifier (the session package stores a hash of the value in the cookie).
+type Session struct {
+	ID        string
+	Username  string
+	ExpiresAt time.Time
+}
+
+// SessionRepository stores resource-owner login sessions so the server, not
+// the browser, decides whether a session is still live.
+type SessionRepository interface {
+	// Create returns ErrConflict if the ID exists.
+	Create(ctx context.Context, s Session) error
+	// Active reports whether a session with this ID exists for username, has
+	// not expired at now and has not been revoked.
+	Active(ctx context.Context, id, username string, now time.Time) (bool, error)
+	// Revoke ends one session. It is idempotent and ignores unknown IDs.
+	Revoke(ctx context.Context, id string, now time.Time) error
+	// RevokeAllForUser ends every live session of username.
+	RevokeAllForUser(ctx context.Context, username string, now time.Time) error
+}
+
 // AuthCodeRepository stores one-time authorization codes.
 type AuthCodeRepository interface {
 	// Create returns ErrConflict if the hash exists.
@@ -243,6 +265,7 @@ type Repositories interface {
 	AccessTokens() AccessTokenRepository
 	DeviceCodes() DeviceCodeRepository
 	PushedRequests() PushedRequestRepository
+	Sessions() SessionRepository
 }
 
 // Store is the storage port every adapter (SQLite now, PostgreSQL later)
