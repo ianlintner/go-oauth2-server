@@ -179,12 +179,11 @@ func TestResourceDemandsNonceInAllMode(t *testing.T) {
 func TestResourceStaleNonceInAllModeGetsFreshOne(t *testing.T) {
 	e := newNonceEnv(t, true)
 	k := dpoptest.NewKey(t)
-	at := e.boundToken(t, k)
 	stale := e.nonces.Next()
 	e.clock.t = e.clock.t.Add(10 * time.Minute)
 	// The bound access token must outlive the clock jump for this to isolate
 	// the nonce: re-mint at the new time through the handshake.
-	at = e.boundToken(t, k)
+	at := e.boundToken(t, k)
 	rec := e.userinfo(t, k, at, stale)
 	if rec.Code != http.StatusUnauthorized || jsonBody(t, rec)["error"] != "use_dpop_nonce" {
 		t.Fatalf("stale: %d %q, want 401 use_dpop_nonce", rec.Code, rec.Body.String())

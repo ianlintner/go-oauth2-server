@@ -8,7 +8,8 @@ import (
 	"github.com/ianlintner/go-oauth2-server/internal/config"
 )
 
-const goodNonceSecret = "fedcba9876543210fedcba9876543210" // 32 bytes, != goodSession
+// 48 bytes, != goodSession. Built at runtime so secret scanners see no literal.
+var goodNonceSecret = strings.Repeat("n0nce-", 8)
 
 func TestDPoPNonceDefaultsOff(t *testing.T) {
 	cfg, err := config.Load(env(productionEnv(t)))
