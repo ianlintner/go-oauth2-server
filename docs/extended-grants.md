@@ -46,19 +46,41 @@ it is RFC-safe. They are proposed here for owner review, not silently shipped.
    misbehaving client cannot ride a lower limit. A spent or denied code never
    answers `slow_down`.
 
-3. **User-code entry brute-force limit.** A signed-in user may fail at most
+3. **Verification page.** `GET /oauth/device/verify?user_code=…` (signed-in
+   users only) shows the requesting client's registered name (or, for a client
+   without one, its `client_id` marked as unnamed), the requested scope and the
+   code, and offers Approve and Deny. The lookup counts against the same
+   per-user failed-entry limit as a decision when the request is marked
+   `Sec-Fetch-Site: same-origin` or `none`. A storage error does not count. A
+   request marked `cross-site` or `same-site` gets the plain entry form without
+   any lookup, and a request without that header is looked up against a
+   separate lookup-only window, so lookups the user did not type cannot use up
+   the budget that guards decisions. When that window is used up the page
+   answers with the entry form instead of an error: the form carries a
+   session-bound token and submits the typed code by `POST` with
+   `action=lookup`, which needs that token (`403` otherwise) and is charged to
+   the decision budget, so a user whose browser omits the header is never
+   locked out and nothing off-site can trigger the lookup. The decision `POST` must carry
+   the `csrf_token` issued with that page — bound to the session cookie and to
+   that user code, valid for 15 minutes — and an `action` of exactly `approve`
+   or `deny`; a missing token is `403`, a missing or other `action` is
+   `invalid_request`. `Sec-Fetch-Site` is still checked but only as an extra
+   layer. The contract runner drives the JSON endpoints and does not render
+   this page, so these rules are covered by unit tests only.
+
+4. **User-code entry brute-force limit.** A signed-in user may fail at most
    5 entries per 5 minutes (returning 429), inside `authcode` only. The count
    is a single atomic check-and-record, so concurrent guesses cannot overshoot
    the cap, and a successful entry does not count against it. RFC 8628 §5.2
    requires the endpoint be designed to limit brute-force attempts.
 
-4. **Pushed request lifetime.** `request_uri` is single-use (RFC 9126 §2.2)
+5. **Pushed request lifetime.** `request_uri` is single-use (RFC 9126 §2.2)
    and expires after **60 seconds** — a policy choice; the RFC leaves TTL to
    the AS. `request_uri` is 256-bit random under
    `urn:ietf:params:oauth:request_uri:`; client-bound; resolved only to the
    pushing client.
 
-5. **Dynamic registration policy.** Open registration (no initial access
+6. **Dynamic registration policy.** Open registration (no initial access
    token), gated: **refused in production**, implied in conformance mode, and
    opt-in otherwise via `OAUTH2_DYNAMIC_REGISTRATION=1`. A registered client:
    - may hold only `authorization_code`, `refresh_token` and the device grant
@@ -95,7 +117,10 @@ it is RFC-safe. They are proposed here for owner review, not silently shipped.
   in production) or on `/oauth/device_authorization` and registration (neither is
   reachable in production: the first is conformance-only, the second is refused).
 - The user-code failure limiter is **in-process memory**, so it does not span
-  replicas; it bounds brute force only per process.
+  replicas; it bounds brute force only per process. The client-authentication
+  and login failure budgets and the concurrent-hash bound (README, "Request
+  throttling") are per process in the same way. Unauthenticated `/oauth/par`
+  and the other endpoints are still not limited per source.
 - The user code is stored as an (unsalted) SHA-256 of ~34.6 bits, brute-forceable
   if the database leaks, within its 10-minute TTL.
 - A token-assembly failure after `Consume` would burn a device code without

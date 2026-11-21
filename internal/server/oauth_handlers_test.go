@@ -35,6 +35,7 @@ type handlerEnv struct {
 	store oauth.Store
 	clock *hClock
 	deps  server.Deps
+	sess  *session.Manager
 }
 
 // withoutLogin returns the same environment served with the login and
@@ -633,5 +634,24 @@ func TestLoginIsNotRoutedOutsideConformanceMode(t *testing.T) {
 	loc := location(t, rec)
 	if loc.Query().Get("error") != "access_denied" || loc.Query().Has("code") {
 		t.Fatalf("Location = %q", loc.String())
+	}
+}
+
+func TestLoginThrottlesRepeatedFailures(t *testing.T) {
+	e := newHandlerEnv(t)
+	for i := 0; i < 10; i++ {
+		if rec := e.postForm("/auth/login", "username=alice&password=wrong"); rec.Code != 403 {
+			t.Fatalf("attempt %d: status = %d, want 403", i+1, rec.Code)
+		}
+	}
+	if rec := e.postForm("/auth/login", "username=alice&password=wrong"); rec.Code != 429 {
+		t.Fatalf("11th attempt: status = %d, want 429", rec.Code)
+	}
+	rec := e.postForm("/auth/login", "username=alice&password=test-only-password")
+	if rec.Code != 429 {
+		t.Fatalf("correct login inside the window: status = %d, want 429", rec.Code)
+	}
+	if len(rec.Result().Cookies()) != 0 {
+		t.Fatal("a throttled login must not set a session")
 	}
 }

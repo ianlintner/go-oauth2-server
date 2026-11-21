@@ -39,10 +39,29 @@ func testDeviceCodes(t *testing.T, f Factory) {
 		}
 	})
 
+	t.Run("read by user code hash is read-only", func(t *testing.T) {
+		s := newStore(t, f)
+		mustNoErr(t, s.DeviceCodes().Create(ctx, sampleDevice("d1", "u1")), "create")
+		got, err := s.DeviceCodes().GetByUserCodeHash(ctx, "u1")
+		mustNoErr(t, err, "get by user code")
+		if got.DeviceCodeHash != "d1" || got.Status != oauth.DevicePending {
+			t.Fatalf("mismatch: %+v", got)
+		}
+		again, err := s.DeviceCodes().GetByUserCodeHash(ctx, "u1")
+		mustNoErr(t, err, "get again")
+		if again.Status != oauth.DevicePending {
+			t.Fatalf("lookup changed state: %+v", again)
+		}
+		_, err = s.DeviceCodes().GetByUserCodeHash(ctx, "d1")
+		wantErr(t, err, oauth.ErrNotFound, "device hash is not a user code hash")
+	})
+
 	t.Run("unknown hash is not found", func(t *testing.T) {
 		s := newStore(t, f)
 		_, err := s.DeviceCodes().GetByHash(ctx, "nope")
 		wantErr(t, err, oauth.ErrNotFound, "get")
+		_, err = s.DeviceCodes().GetByUserCodeHash(ctx, "nope")
+		wantErr(t, err, oauth.ErrNotFound, "get by user code")
 		_, err = s.DeviceCodes().Decide(ctx, "nope", oauth.DeviceApproved, "user-1")
 		wantErr(t, err, oauth.ErrNotFound, "decide")
 		_, err = s.DeviceCodes().Consume(ctx, "nope", ref)

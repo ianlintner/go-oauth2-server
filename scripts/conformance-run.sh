@@ -38,13 +38,17 @@ trap cleanup EXIT
 # Ask the kernel for a free port so a stray listener can never answer for us.
 port="${CONFORMANCE_PORT:-$(python3 -c 'import socket; s=socket.socket(); s.bind(("127.0.0.1", 0)); print(s.getsockname()[1])')}"
 
-# The contract's reference seed is used unmodified: its issuer
+# The contract's reference seed is used as is: its issuer
 # (http://localhost:8080) is asserted literally by the iss and metadata
 # scenarios, so the SUT advertises exactly that issuer while listening on a
 # free port. The runner only reaches the SUT through --base-url and never
 # follows a redirect, so the listen address and the issuer string are
 # independent here.
-cp "$contract_dir/examples/seed.yaml" "$work/seed.yaml"
+# The one exception: the private_key_jwt fixture client (client-jwt) is dropped
+# because it needs client-assertion authentication and the jwt-bearer grant,
+# which this server does not implement and the claimed profiles do not use.
+awk '/^  # private_key_jwt client/ {skip=1} /^users:/ {skip=0} !skip' \
+  "$contract_dir/examples/seed.yaml" > "$work/seed.yaml"
 issuer="$(sed -n 's/^issuer:[[:space:]]*//p' "$work/seed.yaml")"
 [ -n "$issuer" ] || { echo "seed.yaml has no issuer" >&2; exit 1; }
 

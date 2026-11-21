@@ -50,11 +50,14 @@ are not claimed (see "Not implemented").
    store is full the verifier fails closed (`503 temporarily_unavailable` at
    the token endpoint, `invalid_dpop_proof` at a resource) rather than evicting
    live entries, which would let an attacker flush it and replay a proof.
-3. **Proofs are verified before client authentication** at the token endpoint,
-   so an unauthenticated caller can consume replay-store capacity with valid
-   self-signed proofs (a fail-closed denial of service of DPoP issuance, bounded
-   by the 90 s lifetime). Rate limiting (RFC 9700 §2.5, below) is the intended
-   mitigation and is not yet present.
+3. **Proofs are checked before client authentication but recorded after it**
+   at the token endpoint. The stateless checks (signature, claims, `htm`,
+   `htu`, `iat`) run first, so a bad proof is still answered
+   `invalid_dpop_proof`; the `jti` is added to the replay store only once the
+   client has authenticated and may use the grant, so a caller that fails
+   client authentication does not consume replay-store capacity. An
+   authenticated client can still use capacity; per-client throttling
+   (RFC 9700 §2.5, below) is not yet present.
 4. **`htu` is built from the configured issuer, not the `Host` header**, so
    proofs bind to the public origin even behind a proxy. A deployment whose
    public URL differs from `OAUTH2_ISSUER` will reject all proofs.
@@ -68,14 +71,16 @@ are not claimed (see "Not implemented").
   contract's `mtls-request` helper does not exist in the runner yet either.
 - DPoP server nonces, persistent/shared replay store, refresh-token binding for
   public clients, `dpop_jkt` at the authorization endpoint / PAR.
-- RFC 9700 controls beyond those already present: per-client rate limiting and
-  invalid-client throttling (scenarios `sender-constrained.abuse.*`: the three
+- RFC 9700 controls beyond those already present: in-process per-client-id
+  failure budgets and a concurrent-hash bound now exist (README, "Request
+  throttling"), but the contract does not express throttling, so the runner has
+  no scenario that exercises them (scenarios `sender-constrained.abuse.*`: the three
   `PASS` lines in the runner are placeholder scenarios that assert only HTTP 200,
   not evidence of rate limiting).
 
 ## Conformance status
 
-Pinned contract: `985fef7` (v0.5). Of the 35 `sender-constrained` scenarios, 7
+Pinned contract: `771d0d6`. Of the 35 `sender-constrained` scenarios, 7
 are `stable` and exercised against this server in `scripts/conformance-run.sh`:
 `dpop.token-type-dpop`, `jti-required`, `jti-replay`, `htm-binding`,
 `htu-binding`, `typ-header`, `iat-stale` — all pass. The rest are `draft`
