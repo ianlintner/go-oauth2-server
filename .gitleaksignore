@@ -19,3 +19,9 @@ scripts/conformance-run.sh:generic-api-key:59
 
 # scripts/sut-smoke.sh — `OAUTH2_SESSION_SECRET` CI-only dummy (fake).
 scripts/sut-smoke.sh:generic-api-key:44
+
+# internal/dpop/nonce_test.go and internal/config/dpop_nonce_test.go — the first
+# revision (fceb445) held fake nonce-secret literals; later revisions build the
+# value at runtime. Ignore covers that historical commit only.
+internal/dpop/nonce_test.go:generic-api-key:14
+internal/config/dpop_nonce_test.go:generic-api-key:11
