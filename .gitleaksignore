@@ -19,3 +19,11 @@ scripts/conformance-run.sh:generic-api-key:59
 
 # scripts/sut-smoke.sh — `OAUTH2_SESSION_SECRET` CI-only dummy (fake).
 scripts/sut-smoke.sh:generic-api-key:44
+
+# DPoP nonce PR #39 history, commit fceb445: fake HMAC test fixtures in
+# internal/config/dpop_nonce_test.go and internal/dpop/nonce_test.go (hex /
+# "-nonce" placeholders, never real keys). They were reworded in 142048c, but
+# fceb445 stays reachable and the gitleaks job scans all refs, so it fails main
+# and every open PR until these fingerprints are ignored.
+fceb445af02907bc833ce109aa25a417b19f568c:internal/config/dpop_nonce_test.go:generic-api-key:11
+fceb445af02907bc833ce109aa25a417b19f568c:internal/dpop/nonce_test.go:generic-api-key:14
