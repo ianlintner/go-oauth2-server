@@ -34,6 +34,7 @@ type handlerEnv struct {
 	h     http.Handler
 	store oauth.Store
 	clock *hClock
+	sess  *session.Manager
 }
 
 func newHandlerEnv(t *testing.T) *handlerEnv { return newEnvMode(t, true) }

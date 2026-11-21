@@ -7,6 +7,7 @@ package session
 
 import (
 	"crypto/hmac"
+	"crypto/rand"
 	"crypto/sha256"
 	"encoding/base64"
 	"errors"
@@ -107,4 +108,56 @@ func (m *Manager) Username(r *http.Request) (string, bool) {
 		return "", false
 	}
 	return username, true
+}
+
+// FormTokenTTL is how long an issued form token stays valid.
+const FormTokenTTL = 15 * time.Minute
+
+// formMAC binds a form token to the session cookie, a purpose label and the
+// token's nonce and expiry. The "form|" prefix keeps these MACs distinct from
+// the cookie signature.
+func (m *Manager) formMAC(cookieValue, purpose, nonce, exp string) string {
+	return m.sign("form|" + cookieValue + "|" + purpose + "|" + nonce + "|" + exp)
+}
+
+// FormToken returns an anti-forgery token for a state-changing form, bound to
+// the caller's current session cookie and to purpose (for example the exact
+// authorization being decided). ok is false when there is no valid session.
+func (m *Manager) FormToken(r *http.Request, purpose string) (string, bool) {
+	c, err := r.Cookie(m.name())
+	if err != nil {
+		return "", false
+	}
+	if _, ok := m.Username(r); !ok {
+		return "", false
+	}
+	raw := make([]byte, 16)
+	if _, err := rand.Read(raw); err != nil {
+		return "", false
+	}
+	nonce := b64.EncodeToString(raw)
+	exp := strconv.FormatInt(m.clock.Now().Add(FormTokenTTL).Unix(), 10)
+	return nonce + "." + exp + "." + m.formMAC(c.Value, purpose, nonce, exp), true
+}
+
+// VerifyFormToken reports whether token was issued by FormToken for this
+// request's session and purpose and has not expired.
+func (m *Manager) VerifyFormToken(r *http.Request, purpose, token string) bool {
+	c, err := r.Cookie(m.name())
+	if err != nil {
+		return false
+	}
+	if _, ok := m.Username(r); !ok {
+		return false
+	}
+	parts := strings.Split(token, ".")
+	if len(parts) != 3 {
+		return false
+	}
+	nonce, exp, mac := parts[0], parts[1], parts[2]
+	if !hmac.Equal([]byte(mac), []byte(m.formMAC(c.Value, purpose, nonce, exp))) {
+		return false
+	}
+	expUnix, err := strconv.ParseInt(exp, 10, 64)
+	return err == nil && m.clock.Now().Before(time.Unix(expUnix, 0))
 }

@@ -121,3 +121,35 @@ func TestNewRejectsShortKey(t *testing.T) {
 		t.Fatal("a short key must be refused")
 	}
 }
+
+func TestFormTokenBindsSessionPurposeAndExpiry(t *testing.T) {
+	clk := &fixedClock{t: time.Unix(1_700_000_000, 0)}
+	m := newManager(t, clk, true)
+	req := request(issue(t, m, "alice"))
+
+	tok, ok := m.FormToken(req, "p1")
+	if !ok || tok == "" {
+		t.Fatal("no token for a signed-in request")
+	}
+	if !m.VerifyFormToken(req, "p1", tok) {
+		t.Fatal("fresh token must verify")
+	}
+	if m.VerifyFormToken(req, "p2", tok) {
+		t.Fatal("token must not verify for another purpose")
+	}
+	if m.VerifyFormToken(req, "p1", tok+"x") || m.VerifyFormToken(req, "p1", "") {
+		t.Fatal("altered or empty token must not verify")
+	}
+	clk.t = clk.t.Add(time.Second)
+	otherReq := request(issue(t, m, "alice"))
+	if m.VerifyFormToken(otherReq, "p1", tok) {
+		t.Fatal("token must not verify under another session cookie")
+	}
+	if _, ok := m.FormToken(httptest.NewRequest("GET", "/", nil), "p1"); ok {
+		t.Fatal("no session, no token")
+	}
+	clk.t = clk.t.Add(session.FormTokenTTL)
+	if m.VerifyFormToken(req, "p1", tok) {
+		t.Fatal("token must expire")
+	}
+}
