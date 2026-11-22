@@ -154,6 +154,17 @@ func Run(ctx context.Context, opts Options) error {
 		return fmt.Errorf("session manager: %w", err)
 	}
 
+	// Stateless DPoP server nonces (RFC 9449 §8–9); opt-in. Config has already
+	// required a dedicated secret of sufficient length when they are on.
+	var nonces *dpop.NonceSource
+	if cfg.DPoPNonce != config.DPoPNonceOff {
+		nonces, err = dpop.NewNonceSource(oauth.SystemClock{}, []byte(cfg.DPoPNonceSecret), dpop.DefaultNonceWindow)
+		if err != nil {
+			closeListener()
+			return fmt.Errorf("dpop nonce source: %w", err)
+		}
+	}
+
 	listener := opts.Listener
 	if listener == nil {
 		listener, err = net.Listen("tcp", cfg.Addr)
@@ -184,7 +195,11 @@ func Run(ctx context.Context, opts Options) error {
 		Issuer:      cfg.Issuer,
 		Tokens:      tokens,
 		Logger:      log,
-		DPoP:        dpop.NewVerifier(dpop.Config{Clock: oauth.SystemClock{}, Replay: replay}),
+		// DPoP replay state lives in the primary database when storage is
+		// persistent (see replay above); server nonces are stateless.
+		DPoP:               dpop.NewVerifier(dpop.Config{Clock: oauth.SystemClock{}, Replay: replay}),
+		DPoPNonces:         nonces,
+		DPoPNonceResources: cfg.DPoPNonce == config.DPoPNonceAll,
 
 		RegistrationEnabled: cfg.DynamicRegistration,
 		RegistrationScopes:  []string{"openid", "read"},

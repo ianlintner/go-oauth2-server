@@ -201,6 +201,9 @@ type DeviceCodeRepository interface {
 	// GetByHash returns ErrNotFound if absent. The record is returned even if
 	// it is expired, decided or consumed; the caller decides what that means.
 	GetByHash(ctx context.Context, deviceCodeHash string) (DeviceCode, error)
+	// GetByUserCodeHash returns ErrNotFound if absent. Like GetByHash it
+	// returns the record whatever its state; it never modifies anything.
+	GetByUserCodeHash(ctx context.Context, userCodeHash string) (DeviceCode, error)
 	// Decide atomically moves the authorization with this user-code hash from
 	// pending to approved or denied (status) and records userID. Exactly one of
 	// any number of concurrent callers succeeds; a decided or consumed

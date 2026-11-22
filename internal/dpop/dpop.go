@@ -8,9 +8,10 @@
 // to one error without leaking which check failed.
 //
 // Scope of this slice: proof syntax, signature, header/claim checks, ath
-// binding and jti replay detection (in-memory, or SQLReplayStore for a store
-// that survives restarts and is shared across instances). Server-provided
-// nonces (RFC 9449 §8, §9) are NOT implemented; see docs/sender-constrained.md.
+// binding, optional stateless server nonces (RFC 9449 §8, §9; see
+// NonceSource) and jti replay detection (in-memory, or SQLReplayStore for a
+// store that survives restarts and is shared across instances). See
+// docs/sender-constrained.md for deployment limits.
 package dpop
 
 import (
@@ -113,14 +114,21 @@ type Request struct {
 	// ath = base64url(SHA-256(AccessToken)) (RFC 9449 §4.2, §7.1). Empty at the
 	// token endpoint, where a proof carrying ath is refused.
 	AccessToken string
+	// Nonces, when set, makes a current server-provided nonce mandatory
+	// (RFC 9449 §8, §9): a proof without one the source accepts fails Check
+	// with ErrUseNonce. The check runs after every other stateless check and
+	// before the jti is recorded, so a proof sent back for a nonce burns no
+	// jti and can be re-signed with the new nonce.
+	Nonces *NonceSource
 }
 
 type proofClaims struct {
-	JTI string   `json:"jti"`
-	HTM string   `json:"htm"`
-	HTU string   `json:"htu"`
-	IAT *float64 `json:"iat"`
-	ATH string   `json:"ath"`
+	Nonce string   `json:"nonce"`
+	JTI   string   `json:"jti"`
+	HTM   string   `json:"htm"`
+	HTU   string   `json:"htu"`
+	IAT   *float64 `json:"iat"`
+	ATH   string   `json:"ath"`
 }
 
 // Checked is a proof that passed every stateless check but has not yet been
@@ -199,6 +207,10 @@ func (v *Verifier) Check(req Request) (Checked, error) {
 		if c.ATH == "" || subtle.ConstantTimeCompare([]byte(c.ATH), []byte(want)) != 1 {
 			return Checked{}, invalid("ath does not match the access token")
 		}
+	}
+
+	if req.Nonces != nil && !req.Nonces.Valid(c.Nonce) {
+		return Checked{}, ErrUseNonce
 	}
 
 	tp, err := jwk.Thumbprint(crypto.SHA256)
