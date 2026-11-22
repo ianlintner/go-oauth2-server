@@ -26,6 +26,15 @@ func dpopChallenge(w http.ResponseWriter, code string) {
 	w.Header().Set("WWW-Authenticate", `DPoP error="`+code+`", algs="`+strings.Join(dpopAlgs(), " ")+`"`)
 }
 
+// setNonce attaches a fresh DPoP-Nonce (RFC 9449 §8.2) when server nonces are
+// enabled. The nonce is not a secret: it is useless without a proof signed by
+// the client's own key.
+func (h *oauthHandlers) setNonce(w http.ResponseWriter) {
+	if h.nonces != nil {
+		w.Header().Set("DPoP-Nonce", h.nonces.Next())
+	}
+}
+
 // requestURL is the URL a client addressed for r, for htu comparison: the
 // configured public issuer origin plus the request path. It is built from
 // configuration, never from the Host header or forwarding headers, which a
@@ -49,7 +58,9 @@ func (h *oauthHandlers) withTokenEndpointProof(ctx context.Context, r *http.Requ
 	if len(proofs) != 1 {
 		return ctx, oauth.InvalidDPoPProof()
 	}
-	checked, err := h.dpop.Check(dpop.Request{Proof: proofs[0], Method: r.Method, URL: h.requestURL(r)})
+	// Nonce enforcement happens inside Check, before the jti is recorded, so a
+	// proof bounced for a stale nonce burns nothing.
+	checked, err := h.dpop.Check(dpop.Request{Proof: proofs[0], Method: r.Method, URL: h.requestURL(r), Nonces: h.nonces})
 	if err != nil {
 		return ctx, h.proofError(err)
 	}
@@ -70,6 +81,8 @@ func (h *oauthHandlers) withTokenEndpointProof(ctx context.Context, r *http.Requ
 // condition, not the client's fault.
 func (h *oauthHandlers) proofError(err error) error {
 	switch {
+	case errors.Is(err, dpop.ErrUseNonce):
+		return oauth.UseDPoPNonce()
 	case errors.Is(err, dpop.ErrInvalidProof):
 		return oauth.InvalidDPoPProof()
 	case errors.Is(err, dpop.ErrReplayStoreFull):
@@ -88,8 +101,14 @@ func (h *oauthHandlers) checkResourceProof(r *http.Request, accessToken, boundJK
 	if len(proofs) != 1 {
 		return "invalid_dpop_proof"
 	}
-	jkt, err := h.dpop.Verify(r.Context(), dpop.Request{Proof: proofs[0], Method: r.Method, URL: h.requestURL(r), AccessToken: accessToken})
+	req := dpop.Request{Proof: proofs[0], Method: r.Method, URL: h.requestURL(r), AccessToken: accessToken}
+	if h.nonceResources {
+		req.Nonces = h.nonces
+	}
+	jkt, err := h.dpop.Verify(r.Context(), req)
 	switch {
+	case errors.Is(err, dpop.ErrUseNonce):
+		return "use_dpop_nonce"
 	case errors.Is(err, dpop.ErrInvalidProof):
 		return "invalid_dpop_proof"
 	case err != nil:
