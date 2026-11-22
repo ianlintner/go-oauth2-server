@@ -1,27 +1,43 @@
 # gitleaks false positives — no real credentials in this repository.
 #
-# Every entry below matches a known-fake test/CI fixture that shares the same
-# intentionally-dummy 32-byte value `0123456789abcdef0123456789abcdef`
-# (a well-known, non-secret hex pattern) used to exercise session-secret and
-# signing-key handling without embedding a real credential.
+# Every entry matches a known-fake test/CI fixture: an intentionally-dummy
+# 32-byte lowercase-hex value, or a synthetic HMAC key, used only to exercise
+# session-secret, signing-key and DPoP nonce handling.
 #
-# Format is `file:rule-id:line` (a full-history ignore: it matches that file,
-# rule id and line number in any commit, so it also covers older revisions of
-# the same fixture). See gitleaks `.gitleaksignore` docs.
+# Format is gitleaks' own finding fingerprint, split on ':':
+#   file:rule-id:start-line             matches in any commit
+#   commit:file:rule-id:start-line      matches that revision only
+# The last field MUST be the real 1-based start line from the scan output, and
+# `rule-id` contains hyphens, so only split fields from the left. A wildcard
+# there matches nothing and silently disables the entry. Entries are pinned to
+# whole commit ids and to the revisions that report a finding, so a different
+# commit using the same fixture under a moved line is reported rather than
+# silently hidden.
 #
-# Added 2026-11-15 as part of Phase 1 security-tooling parity.
+# Added 2026-11-15 as part of Phase 1 security-tooling parity; repinned to real
+# line numbers 2026-11-21 after wildcard entries were found to be inert.
 
-# internal/session/session_test.go — `testKey` fixture value (fake).
-internal/session/session_test.go:generic-api-key:17
+# internal/session/session_test.go — `testKey` session-cookie signing fixture.
+# Only these two early revisions report it (line 17).
+061999ffbd513a3bc28edf92afe336272d7803ce:internal/session/session_test.go:generic-api-key:17
+f99369489cfea0d25ff0b29caece2992de07ea50:internal/session/session_test.go:generic-api-key:17
 
-# scripts/conformance-run.sh — `OAUTH2_SESSION_SECRET` CI-only dummy (fake).
-scripts/conformance-run.sh:generic-api-key:59
+# scripts/conformance-run.sh — `OAUTH2_SESSION_SECRET` dummy passed as an inline
+# env assignment to the server under test (line 59 in both reporting revisions).
+061999ffbd513a3bc28edf92afe336272d7803ce:scripts/conformance-run.sh:generic-api-key:59
+f99369489cfea0d25ff0b29caece2992de07ea50:scripts/conformance-run.sh:generic-api-key:59
 
-# scripts/sut-smoke.sh — `OAUTH2_SESSION_SECRET` CI-only dummy (fake).
-scripts/sut-smoke.sh:generic-api-key:44
+# scripts/sut-smoke.sh — `OAUTH2_SESSION_SECRET` dummy exported for the smoke
+# target (line 44 in both reporting revisions). The short refusal value further
+# down is not reported.
+9fd47f2013fc741166a2d7a78abd0e11ef1b1dde:scripts/sut-smoke.sh:generic-api-key:44
+c2e00a581351e08b43a38edfecb8f10c8c5015ca:scripts/sut-smoke.sh:generic-api-key:44
 
-# internal/dpop/nonce_test.go and internal/config/dpop_nonce_test.go — the first
-# revision (fceb445) held fake nonce-secret literals; later revisions build the
-# value at runtime. Ignore covers that historical commit only.
-internal/dpop/nonce_test.go:generic-api-key:14
-internal/config/dpop_nonce_test.go:generic-api-key:11
+# DPoP server-nonce unit tests — synthetic HMAC test keys.
+#
+# fceb445 is the one revision holding these literals; the shipped revision of
+# both files builds the value at runtime. fceb445 stays reachable through the
+# branch of the open DPoP PR, and `gitleaks git` scans every fetched ref, which
+# is what turned main's Security job red.
+fceb445af02907bc833ce109aa25a417b19f568c:internal/config/dpop_nonce_test.go:generic-api-key:11
+fceb445af02907bc833ce109aa25a417b19f568c:internal/dpop/nonce_test.go:generic-api-key:14
