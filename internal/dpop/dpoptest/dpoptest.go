@@ -49,6 +49,7 @@ type Spec struct {
 	Typ         string
 	AccessToken string // when set, ath is its base64url SHA-256
 	Omit        []string
+	Nonce       string // when set, the server-provided nonce claim
 }
 
 // Proof signs a proof with k.
@@ -68,6 +69,9 @@ func (k Key) Proof(t testing.TB, s Spec) string {
 	if s.AccessToken != "" {
 		sum := sha256.Sum256([]byte(s.AccessToken))
 		claims["ath"] = base64.RawURLEncoding.EncodeToString(sum[:])
+	}
+	if s.Nonce != "" {
+		claims["nonce"] = s.Nonce
 	}
 	for _, name := range s.Omit {
 		delete(claims, name)
