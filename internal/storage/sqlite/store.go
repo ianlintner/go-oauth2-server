@@ -131,6 +131,7 @@ type repos struct {
 	device  *deviceRepo
 	pushed  *pushedRepo
 	approve *approvalRepo
+	session *sessionRepo
 }
 
 func newRepos(db execer) repos {
@@ -143,6 +144,7 @@ func newRepos(db execer) repos {
 		device:  &deviceRepo{db},
 		pushed:  &pushedRepo{db},
 		approve: &approvalRepo{db},
+		session: &sessionRepo{db},
 	}
 }
 
@@ -151,6 +153,9 @@ func (r repos) DeviceCodes() oauth.DeviceCodeRepository { return r.device }
 
 // PushedRequests returns the RFC 9126 pushed-request repository.
 func (r repos) PushedRequests() oauth.PushedRequestRepository { return r.pushed }
+
+// Sessions returns the resource-owner session repository.
+func (r repos) Sessions() oauth.SessionRepository { return r.session }
 
 // Clients returns the client repository.
 func (r repos) Clients() oauth.ClientRepository { return r.clients }

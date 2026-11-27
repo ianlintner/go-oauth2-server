@@ -89,12 +89,13 @@ func newEnvMode(t *testing.T, conformance bool) *handlerEnv {
 	if err != nil {
 		t.Fatal(err)
 	}
-	sess, err := session.New([]byte("0123456789abcdef0123456789abcdef"), clk, true)
+	sess, err := session.New([]byte("0123456789abcdef0123456789abcdef"), clk, true, st.Sessions())
 	if err != nil {
 		t.Fatal(err)
 	}
 	deps := server.Deps{Service: svc, Sessions: sess, Issuer: issuer, Conformance: conformance}
-	return &handlerEnv{h: server.New(deps), store: st, clock: clk, deps: deps}
+	h := server.New(deps)
+	return &handlerEnv{h: h, store: st, clock: clk, deps: deps, sess: sess}
 }
 
 // approveClient stores an explicit approval of clientID by userID, the state a
@@ -369,9 +370,11 @@ func TestAuthorizeRejectsMalformedQuery(t *testing.T) {
 
 func TestAuthorizeIgnoresSessionOfAnUnknownUser(t *testing.T) {
 	e := newHandlerEnv(t)
-	sess, _ := session.New([]byte("0123456789abcdef0123456789abcdef"), e.clock, true)
+	sess, _ := session.New([]byte("0123456789abcdef0123456789abcdef"), e.clock, true, e.store.Sessions())
 	rec := httptest.NewRecorder()
-	sess.Issue(rec, "ghost")
+	if err := sess.Issue(context.Background(), rec, "ghost", "x"); err != nil {
+		t.Fatal(err)
+	}
 	c := rec.Result().Cookies()[0]
 	out := e.get("/oauth/authorize?"+authQuery("client-a", callback, nil), cookie(c.Name+"="+c.Value))
 	if loc := location(t, out); loc.Path != "/auth/login" {
