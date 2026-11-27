@@ -137,6 +137,12 @@ type IssueParams struct {
 	// thumbprint through a cnf.jkt claim (RFC 9449 §6.1) and makes the token
 	// type DPoP. Empty mints an ordinary bearer token.
 	JKT string
+
+	// UserDelegated marks a token issued on behalf of a resource owner (a
+	// grant that authenticated a user). It is recorded as a signed claim so a
+	// resource can tell user tokens from machine tokens without inferring it
+	// from the subject, since user and client ids may coincide.
+	UserDelegated bool
 }
 
 // AccessToken is an issued access token: the signed JWT value plus the
@@ -195,6 +201,9 @@ func (s *Service) Issue(ctx context.Context, p IssueParams) (AccessToken, error)
 		claims["aud"] = p.Audience[0]
 	} else {
 		claims["aud"] = p.Audience
+	}
+	if p.UserDelegated {
+		claims["user_delegated"] = true
 	}
 	tokenType := TokenTypeName
 	if p.JKT != "" {
@@ -265,19 +274,23 @@ type VerifiedToken struct {
 	// JKT is the cnf.jkt binding; non-empty means the token is DPoP-bound and
 	// must be presented with a matching proof, never as a bare Bearer.
 	JKT string
+	// UserDelegated is true when the signed token records that it was issued
+	// on behalf of a user. Tokens minted before the claim existed report false.
+	UserDelegated bool
 }
 
 // claims is the validated RFC 9068 claim set.
 type claims struct {
-	Issuer   string
-	Subject  string
-	ClientID string
-	JTI      string
-	Scope    string
-	Audience []string
-	JKT      string
-	IssuedAt time.Time
-	Expires  time.Time
+	Issuer    string
+	Subject   string
+	ClientID  string
+	JTI       string
+	Scope     string
+	Audience  []string
+	JKT       string
+	Delegated bool
+	IssuedAt  time.Time
+	Expires   time.Time
 }
 
 var errInvalidToken = errors.New("token: invalid access token")
@@ -344,6 +357,8 @@ func (s *Service) resolve(ctx context.Context, token string) (claims, error) {
 		}
 		c.JKT = jkt
 	}
+
+	c.Delegated, _ = m["user_delegated"].(bool)
 
 	iat, ok := numClaim(m["iat"])
 	if !ok {
@@ -426,6 +441,8 @@ func (s *Service) VerifyAccessToken(ctx context.Context, token string) (Verified
 		Audience: c.Audience,
 		JTI:      c.JTI,
 		JKT:      c.JKT,
+
+		UserDelegated: c.Delegated,
 	}, nil
 }
 

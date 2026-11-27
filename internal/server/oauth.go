@@ -364,7 +364,7 @@ func (h *oauthHandlers) metadataDoc() map[string]any {
 		"grant_types_supported":                          []string{authcode.GrantAuthorizationCode, authcode.GrantRefreshToken, authcode.GrantClientCredentials},
 		"code_challenge_methods_supported":               []string{oauth.MethodS256},
 		"token_endpoint_auth_methods_supported":          []string{authcode.MethodBasic, authcode.MethodPost, "none"},
-		"introspection_endpoint_auth_methods_supported":  []string{authcode.MethodBasic, authcode.MethodPost, "none"},
+		"introspection_endpoint_auth_methods_supported":  []string{authcode.MethodBasic, authcode.MethodPost},
 		"revocation_endpoint_auth_methods_supported":     []string{authcode.MethodBasic, authcode.MethodPost, "none"},
 		"authorization_response_iss_parameter_supported": true,
 		"pushed_authorization_request_endpoint":          base + "/oauth/par",

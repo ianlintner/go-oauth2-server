@@ -732,3 +732,20 @@ func TestNewRequiresDependencies(t *testing.T) {
 		t.Fatal("New must fail closed without a store, clock and random source")
 	}
 }
+
+func TestClientCredentialsRefusesOpenidScope(t *testing.T) {
+	e := newEnv(t)
+	h, err := secret.Hash(oauth.CryptoRandom{}, "test-only-oidc-secret")
+	if err != nil {
+		t.Fatal(err)
+	}
+	c := oauth.Client{ID: "client-cc-oidc", SecretHash: h, AuthMethod: "client_secret_basic", Scopes: []string{"openid", "read"}, GrantTypes: []string{"client_credentials"}}
+	if err := e.store.Clients().Create(context.Background(), c); err != nil {
+		t.Fatal(err)
+	}
+	_, err = e.token(basic("client-cc-oidc", "test-only-oidc-secret"), params(t, "grant_type", "client_credentials", "scope", "openid"))
+	wantCode(t, err, oauth.CodeInvalidScope)
+	if _, err = e.token(basic("client-cc-oidc", "test-only-oidc-secret"), params(t, "grant_type", "client_credentials", "scope", "read")); err != nil {
+		t.Fatalf("plain scope refused: %v", err)
+	}
+}

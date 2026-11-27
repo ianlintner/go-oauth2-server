@@ -140,7 +140,9 @@ func (e *nonceEnv) userinfo(t *testing.T, k dpoptest.Key, at, nonce string) *htt
 func TestResourceDoesNotRequireNonceInTokenMode(t *testing.T) {
 	e := newNonceEnv(t, false)
 	k := dpoptest.NewKey(t)
-	at := e.boundToken(t, k)
+	// UserInfo requires an openid-scoped user token; the token-endpoint
+	// handshake is covered by the tests above.
+	at := e.dpopUserToken(t, k)
 	rec := e.userinfo(t, k, at, "")
 	if rec.Code != http.StatusOK {
 		t.Fatalf("userinfo = %d %q, want 200 (nonce=token leaves resources alone)", rec.Code, rec.Body.String())
@@ -153,7 +155,7 @@ func TestResourceDoesNotRequireNonceInTokenMode(t *testing.T) {
 func TestResourceDemandsNonceInAllMode(t *testing.T) {
 	e := newNonceEnv(t, true)
 	k := dpoptest.NewKey(t)
-	at := e.boundToken(t, k)
+	at := e.dpopUserToken(t, k)
 
 	rec := e.userinfo(t, k, at, "")
 	if rec.Code != http.StatusUnauthorized || jsonBody(t, rec)["error"] != "use_dpop_nonce" {
@@ -168,7 +170,7 @@ func TestResourceDemandsNonceInAllMode(t *testing.T) {
 	}
 
 	rec = e.userinfo(t, k, at, nonce)
-	if rec.Code != http.StatusOK || jsonBody(t, rec)["sub"] != "client-cc" {
+	if rec.Code != http.StatusOK || jsonBody(t, rec)["sub"] != "user-1" {
 		t.Fatalf("with nonce: %d %q", rec.Code, rec.Body.String())
 	}
 	if rec.Header().Get("DPoP-Nonce") == "" {
@@ -196,7 +198,7 @@ func TestResourceStaleNonceInAllModeGetsFreshOne(t *testing.T) {
 func TestResourceNonceRejectionDoesNotBurnTheJTI(t *testing.T) {
 	e := newNonceEnv(t, true)
 	k := dpoptest.NewKey(t)
-	at := e.boundToken(t, k)
+	at := e.dpopUserToken(t, k)
 	s := e.spec("GET", userinfoEndpoint)
 	s.AccessToken, s.JTI = at, "resource-jti"
 	rec := e.get("/oauth/userinfo", header("Authorization", "DPoP "+at), header("DPoP", k.Proof(t, s)))

@@ -116,7 +116,12 @@ func newTokenEnvDeps(t *testing.T, replay func(oauth.Clock) dpop.ReplayStore, tw
 // can exercise introspection and revocation against a persisted JWT.
 func (e *tokenEnv) issueAccessToken(t *testing.T, clientID, subject string) token.AccessToken {
 	t.Helper()
-	at, err := e.tokens.Issue(context.Background(), token.IssueParams{ClientID: clientID, Subject: subject, Scope: "read write", Audience: []string{issuer}})
+	return e.issueAccessTokenScope(t, clientID, subject, "read write")
+}
+
+func (e *tokenEnv) issueAccessTokenScope(t *testing.T, clientID, subject, scope string) token.AccessToken {
+	t.Helper()
+	at, err := e.tokens.Issue(context.Background(), token.IssueParams{ClientID: clientID, Subject: subject, Scope: scope, Audience: []string{issuer}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -377,5 +382,61 @@ func TestOpenIDConfigurationPublishesDiscoveryMembers(t *testing.T) {
 		if m[k] == nil {
 			t.Fatalf("missing %s", k)
 		}
+	}
+}
+
+// ---- introspection caller authentication ---- //
+
+func TestIntrospectRefusesPublicClientIdentificationOnly(t *testing.T) {
+	e := newTokenEnv(t)
+	at := e.issueAccessToken(t, "client-public", "user-1")
+	rec := e.postForm("/oauth/introspect", "token="+at.Value+"&client_id=client-public")
+	if rec.Code != http.StatusUnauthorized || jsonBody(t, rec)["error"] != "invalid_client" {
+		t.Fatalf("status = %d %q, want 401 invalid_client", rec.Code, rec.Body.String())
+	}
+	if rec.Header().Get("WWW-Authenticate") == "" {
+		t.Fatal("missing WWW-Authenticate challenge")
+	}
+}
+
+func TestIntrospectStillServesConfidentialClient(t *testing.T) {
+	e := newTokenEnv(t)
+	at := e.issueAccessToken(t, "client-a", "user-1")
+	rec := e.postForm("/oauth/introspect", "token="+at.Value, basic("client-a", "test-only-secret"))
+	if rec.Code != http.StatusOK || jsonBody(t, rec)["active"] != true {
+		t.Fatalf("status = %d %q", rec.Code, rec.Body.String())
+	}
+}
+
+func TestRevokeStillAcceptsPublicClient(t *testing.T) {
+	e := newTokenEnv(t)
+	at := e.issueAccessToken(t, "client-public", "user-1")
+	rec := e.postForm("/oauth/revoke", "token="+at.Value+"&client_id=client-public")
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d %q, want 200", rec.Code, rec.Body.String())
+	}
+	// Revocation answers 200 for unknown tokens too, so confirm the effect.
+	if _, err := e.tokens.VerifyAccessToken(context.Background(), at.Value); err == nil {
+		t.Fatal("token still verifies after revocation by its public client")
+	}
+}
+
+func TestMetadataDoesNotAdvertiseNoneForIntrospection(t *testing.T) {
+	e := newTokenEnv(t)
+	m := jsonBody(t, e.get("/.well-known/oauth-authorization-server"))
+	has := func(key string) bool {
+		list, _ := m[key].([]any)
+		for _, v := range list {
+			if v == "none" {
+				return true
+			}
+		}
+		return false
+	}
+	if has("introspection_endpoint_auth_methods_supported") {
+		t.Fatal("introspection must not advertise none")
+	}
+	if !has("revocation_endpoint_auth_methods_supported") {
+		t.Fatal("revocation should still advertise none")
 	}
 }
