@@ -86,6 +86,24 @@ func (s *Service) CheckPushed(ctx context.Context, clientID, requestURI string) 
 	return err
 }
 
+// PreviewPushed returns the client and scope of a pushed request without
+// spending it, so the consent step can show what the resource owner is being
+// asked to approve before the request is redeemed.
+func (s *Service) PreviewPushed(ctx context.Context, clientID, requestURI string) (AuthRequest, error) {
+	rec, err := s.loadPushed(ctx, clientID, requestURI)
+	if err != nil {
+		return AuthRequest{}, err
+	}
+	client, err := s.store.Clients().Get(ctx, rec.ClientID)
+	switch {
+	case errors.Is(err, oauth.ErrNotFound):
+		return AuthRequest{}, oauth.InvalidRequestURI("request_uri is invalid, expired or already used")
+	case err != nil:
+		return AuthRequest{}, oauth.ServerError(err)
+	}
+	return AuthRequest{Client: client, RedirectURI: rec.RedirectURI, State: rec.State, Scope: rec.Scope}, nil
+}
+
 func (s *Service) loadPushed(ctx context.Context, clientID, requestURI string) (oauth.PushedRequest, error) {
 	bad := func() (oauth.PushedRequest, error) {
 		return oauth.PushedRequest{}, oauth.InvalidRequestURI("request_uri is invalid, expired or already used")

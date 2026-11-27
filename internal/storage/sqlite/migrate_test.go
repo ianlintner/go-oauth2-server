@@ -36,10 +36,10 @@ func TestMigrateAppliesEmbeddedSchemaAndIsIdempotent(t *testing.T) {
 	if err := db.QueryRow(`SELECT COUNT(*) FROM schema_migrations`).Scan(&n); err != nil {
 		t.Fatal(err)
 	}
-	if n != 7 {
-		t.Fatalf("schema_migrations rows = %d, want 7 (re-open must not re-apply)", n)
+	if n != 9 {
+		t.Fatalf("schema_migrations rows = %d, want 9 (re-open must not re-apply)", n)
 	}
-	for _, table := range []string{"clients", "users", "auth_codes", "refresh_tokens", "refresh_families", "access_tokens", "device_codes", "pushed_requests"} {
+	for _, table := range []string{"clients", "users", "auth_codes", "refresh_tokens", "refresh_families", "access_tokens", "device_codes", "pushed_requests", "approvals", "sessions"} {
 		var name string
 		if err := db.QueryRow(`SELECT name FROM sqlite_master WHERE type='table' AND name=?`, table).Scan(&name); err != nil {
 			t.Fatalf("table %s missing: %v", table, err)
@@ -128,15 +128,15 @@ func TestFamilyAgeMigrationBackfillsExistingFamilies(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	upTo6 := fstest.MapFS{}
+	beforeFamilyAge := fstest.MapFS{}
 	entries, _ := fs.ReadDir(sub, ".")
 	for _, e := range entries {
-		if e.Name() < "0007" {
+		if e.Name() < "0009" {
 			b, _ := fs.ReadFile(sub, e.Name())
-			upTo6["migrations/"+e.Name()] = &fstest.MapFile{Data: b}
+			beforeFamilyAge["migrations/"+e.Name()] = &fstest.MapFile{Data: b}
 		}
 	}
-	if err := migrate(ctx, db, upTo6, "migrations"); err != nil {
+	if err := migrate(ctx, db, beforeFamilyAge, "migrations"); err != nil {
 		t.Fatal(err)
 	}
 	const month = int64(30 * 24 * 3600 * 1e9)
