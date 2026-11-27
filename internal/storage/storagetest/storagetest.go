@@ -73,6 +73,8 @@ func sampleClient(id string) oauth.Client {
 		RedirectURIs: []string{"https://client.example/callback", "https://client.example/other"},
 		Scopes:       []string{"openid", "profile"},
 		GrantTypes:   []string{"authorization_code", "refresh_token"},
+		// Non-empty so the contract proves the actor allow-list persists.
+		AllowedActors: []string{"actor-1", "actor-2"},
 	}
 }
 
@@ -191,7 +193,8 @@ func assertClient(t *testing.T, got, want oauth.Client) {
 		got.AuthMethod != want.AuthMethod || got.Public != want.Public ||
 		!equalStrings(got.RedirectURIs, want.RedirectURIs) ||
 		!equalStrings(got.Scopes, want.Scopes) ||
-		!equalStrings(got.GrantTypes, want.GrantTypes) {
+		!equalStrings(got.GrantTypes, want.GrantTypes) ||
+		!equalStrings(got.AllowedActors, want.AllowedActors) {
 		t.Fatalf("client mismatch\n got: %+v\nwant: %+v", got, want)
 	}
 }

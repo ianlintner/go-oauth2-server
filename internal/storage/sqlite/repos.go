@@ -45,10 +45,10 @@ func (r *clientRepo) Create(ctx context.Context, c oauth.Client) error {
 		public = 1
 	}
 	_, err := r.db.ExecContext(ctx,
-		`INSERT INTO clients (id, name, secret_hash, auth_method, public, redirect_uris, scopes, grant_types, resources)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		`INSERT INTO clients (id, name, secret_hash, auth_method, public, redirect_uris, scopes, grant_types, resources, allowed_actors)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		c.ID, c.Name, c.SecretHash, c.AuthMethod, public,
-		encodeList(c.RedirectURIs), encodeList(c.Scopes), encodeList(c.GrantTypes), encodeList(c.Resources))
+		encodeList(c.RedirectURIs), encodeList(c.Scopes), encodeList(c.GrantTypes), encodeList(c.Resources), encodeList(c.AllowedActors))
 	return createErr(err)
 }
 
@@ -57,12 +57,12 @@ func (r *clientRepo) Get(ctx context.Context, id string) (oauth.Client, error) {
 		c                         oauth.Client
 		public                    int
 		redirects, scopes, grants string
-		resources                 string
+		resources, actors         string
 	)
 	err := r.db.QueryRowContext(ctx,
-		`SELECT id, name, secret_hash, auth_method, public, redirect_uris, scopes, grant_types, resources
+		`SELECT id, name, secret_hash, auth_method, public, redirect_uris, scopes, grant_types, resources, allowed_actors
 		 FROM clients WHERE id = ?`, id).
-		Scan(&c.ID, &c.Name, &c.SecretHash, &c.AuthMethod, &public, &redirects, &scopes, &grants, &resources)
+		Scan(&c.ID, &c.Name, &c.SecretHash, &c.AuthMethod, &public, &redirects, &scopes, &grants, &resources, &actors)
 	if errors.Is(err, sql.ErrNoRows) {
 		return oauth.Client{}, oauth.ErrNotFound
 	}
@@ -80,6 +80,9 @@ func (r *clientRepo) Get(ctx context.Context, id string) (oauth.Client, error) {
 		return oauth.Client{}, err
 	}
 	if c.Resources, err = decodeList(resources); err != nil {
+		return oauth.Client{}, err
+	}
+	if c.AllowedActors, err = decodeList(actors); err != nil {
 		return oauth.Client{}, err
 	}
 	return c, nil

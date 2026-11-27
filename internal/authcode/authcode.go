@@ -95,6 +95,10 @@ type Config struct {
 	// HashObserver, when set, is called each time a hash computation starts
 	// (while it holds a concurrency slot). It exists for tests and telemetry.
 	HashObserver func()
+
+	// MaxDelegationDepth bounds the RFC 8693 act chain of a token minted by
+	// the token-exchange grant. DefaultMaxDelegationDepth when zero.
+	MaxDelegationDepth int
 }
 
 // Service is the authorization-code engine.
@@ -108,6 +112,8 @@ type Service struct {
 
 	tokens     *token.Service
 	refreshTTL time.Duration
+
+	maxDelegationDepth int
 
 	// failures rate-limits failed device user-code entry per signed-in user.
 	failures failureLimiter
@@ -138,6 +144,11 @@ func New(cfg Config) (*Service, error) {
 		tokens:     cfg.Tokens,
 		refreshTTL: cfg.RefreshTokenTTL,
 		hashHook:   cfg.HashObserver,
+
+		maxDelegationDepth: cfg.MaxDelegationDepth,
+	}
+	if s.maxDelegationDepth <= 0 {
+		s.maxDelegationDepth = DefaultMaxDelegationDepth
 	}
 	maxHashes, failLimit := cfg.MaxConcurrentHashes, cfg.AuthFailureLimit
 	if maxHashes == 0 {
@@ -189,6 +200,9 @@ type TokenResponse struct {
 	RefreshToken string `json:"refresh_token,omitempty"`
 	Scope        string `json:"scope,omitempty"`
 	IDToken      string `json:"id_token,omitempty"`
+	// IssuedTokenType is the RFC 8693 §2.2.1 token-type URN of the issued
+	// token; set only by the token-exchange grant.
+	IssuedTokenType string `json:"issued_token_type,omitempty"`
 }
 
 // ---- authorization endpoint ----
@@ -319,7 +333,7 @@ func (s *Service) Token(ctx context.Context, authorization string, p oauth.Param
 	}
 	// Decide support before authenticating so an unsupported grant (including
 	// the prohibited password grant) is refused without touching credentials.
-	if grant != GrantAuthorizationCode && grant != GrantClientCredentials && grant != GrantRefreshToken && grant != GrantDeviceCode {
+	if grant != GrantAuthorizationCode && grant != GrantClientCredentials && grant != GrantRefreshToken && grant != GrantDeviceCode && grant != GrantTokenExchange {
 		return TokenResponse{}, oauth.UnsupportedGrantType("grant_type is not supported")
 	}
 
@@ -353,6 +367,8 @@ func (s *Service) Token(ctx context.Context, authorization string, p oauth.Param
 		return s.refreshToken(ctx, client, p)
 	case GrantDeviceCode:
 		return s.deviceToken(ctx, client, p)
+	case GrantTokenExchange:
+		return s.tokenExchange(ctx, client, p)
 	default:
 		return s.clientCredentials(ctx, client, p)
 	}

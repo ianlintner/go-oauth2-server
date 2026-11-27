@@ -48,6 +48,7 @@ type Client struct {
 	RedirectURIs            []string `yaml:"redirect_uris"`
 	Scopes                  []string `yaml:"scopes"`
 	GrantTypes              []string `yaml:"grant_types"`
+	AllowedActors           []string `yaml:"allowed_actors"`
 }
 
 // User is a seeded resource owner.
@@ -71,7 +72,8 @@ var validGrantTypes = map[string]bool{
 	"authorization_code": true,
 	"refresh_token":      true,
 	"client_credentials": true,
-	"urn:ietf:params:oauth:grant-type:device_code": true,
+	"urn:ietf:params:oauth:grant-type:device_code":    true,
+	"urn:ietf:params:oauth:grant-type:token-exchange": true,
 }
 
 // LoadSeed reads and validates the seed file at path (YAML or JSON). It
@@ -268,6 +270,8 @@ func Apply(ctx context.Context, st oauth.Store, rnd oauth.Random, seed *Seed) er
 				RedirectURIs: c.RedirectURIs,
 				Scopes:       scopes,
 				GrantTypes:   c.GrantTypes,
+
+				AllowedActors: c.AllowedActors,
 			}
 			if c.Name != nil {
 				rec.Name = *c.Name

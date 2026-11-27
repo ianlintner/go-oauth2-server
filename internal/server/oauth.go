@@ -369,6 +369,11 @@ func (h *oauthHandlers) metadataDoc() map[string]any {
 		"authorization_response_iss_parameter_supported": true,
 		"pushed_authorization_request_endpoint":          base + "/oauth/par",
 	}
+	if h.tokens != nil {
+		// RFC 8693 exchange validates tokens through the token service, so it
+		// is served (and therefore advertised) only when that is wired.
+		doc["grant_types_supported"] = append(doc["grant_types_supported"].([]string), authcode.GrantTokenExchange)
+	}
 	if h.loginEnabled {
 		doc["device_authorization_endpoint"] = base + "/oauth/device_authorization"
 		doc["grant_types_supported"] = append(doc["grant_types_supported"].([]string), authcode.GrantDeviceCode)

@@ -35,6 +35,23 @@ type Client struct {
 	// as the audience of an access token. The issuer itself is always
 	// permitted and need not be listed.
 	Resources []string
+	// AllowedActors lists the client IDs permitted to act for, or exchange
+	// tokens issued to, this client under RFC 8693 token exchange. Empty means
+	// no other client may.
+	AllowedActors []string
+}
+
+// AllowsActor reports whether clientID is registered as an allowed actor.
+func (c Client) AllowsActor(clientID string) bool {
+	if clientID == "" {
+		return false
+	}
+	for _, a := range c.AllowedActors {
+		if a == clientID {
+			return true
+		}
+	}
+	return false
 }
 
 // User is a resource owner. PasswordHash is a password hash.

@@ -79,6 +79,9 @@ func introspectBody(info token.TokenInfo) map[string]any {
 	if info.IssuedAt != 0 {
 		body["iat"] = info.IssuedAt
 	}
+	if info.Act != nil {
+		body["act"] = info.Act // RFC 8693 §4.1
+	}
 	if info.JKT != "" {
 		body["cnf"] = map[string]any{"jkt": info.JKT} // RFC 9449 §6.2
 	}
