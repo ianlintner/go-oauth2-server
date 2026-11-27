@@ -3,6 +3,7 @@ package oauth
 import (
 	"context"
 	"errors"
+	"strings"
 	"time"
 )
 
@@ -135,6 +136,31 @@ type PushedRequest struct {
 	ExpiresAt time.Time
 }
 
+// Approval records that a resource owner approved a client for a set of
+// scopes. There is at most one row per (UserID, ClientID); a seeded or
+// user-granted approval is always an explicit row.
+type Approval struct {
+	UserID    string
+	ClientID  string
+	Scopes    []string
+	GrantedAt time.Time
+}
+
+// Covers reports whether every space-delimited scope in requested is part of
+// the approved set. An empty request is covered by any approval.
+func (a Approval) Covers(requested string) bool {
+	have := make(map[string]bool, len(a.Scopes))
+	for _, s := range a.Scopes {
+		have[s] = true
+	}
+	for _, s := range strings.Fields(requested) {
+		if !have[s] {
+			return false
+		}
+	}
+	return true
+}
+
 // ClientRepository stores registered clients.
 type ClientRepository interface {
 	// Create returns ErrConflict if the client ID exists.
@@ -216,6 +242,15 @@ type AccessTokenRepository interface {
 	Revoke(ctx context.Context, jti string, now time.Time) (bool, error)
 }
 
+// ApprovalRepository stores resource-owner approvals of clients.
+type ApprovalRepository interface {
+	// Get returns ErrNotFound when the user has not approved the client.
+	Get(ctx context.Context, userID, clientID string) (Approval, error)
+	// Put records the approval, replacing any earlier row for the same
+	// (user, client) pair.
+	Put(ctx context.Context, a Approval) error
+}
+
 // DeviceCodeRepository stores RFC 8628 device authorizations.
 type DeviceCodeRepository interface {
 	// Create returns ErrConflict if either hash exists.
@@ -265,6 +300,7 @@ type Repositories interface {
 	AccessTokens() AccessTokenRepository
 	DeviceCodes() DeviceCodeRepository
 	PushedRequests() PushedRequestRepository
+	Approvals() ApprovalRepository
 	Sessions() SessionRepository
 }
 

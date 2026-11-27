@@ -211,3 +211,44 @@ func testPushedRequests(t *testing.T, f Factory) {
 		}
 	})
 }
+
+func testApprovals(t *testing.T, f Factory) {
+	ctx := context.Background()
+
+	t.Run("unknown pair is not found", func(t *testing.T) {
+		s := newStore(t, f)
+		_, err := s.Approvals().Get(ctx, "user-1", "client-a")
+		wantErr(t, err, oauth.ErrNotFound, "get missing")
+	})
+
+	t.Run("put and read back round-trips", func(t *testing.T) {
+		s := newStore(t, f)
+		want := oauth.Approval{UserID: "user-1", ClientID: "client-a", Scopes: []string{"openid", "read"}, GrantedAt: ref}
+		mustNoErr(t, s.Approvals().Put(ctx, want), "put")
+		got, err := s.Approvals().Get(ctx, "user-1", "client-a")
+		mustNoErr(t, err, "get")
+		if got.UserID != want.UserID || got.ClientID != want.ClientID || !equalStrings(got.Scopes, want.Scopes) || !got.GrantedAt.Equal(ref) {
+			t.Fatalf("approval mismatch\n got: %+v\nwant: %+v", got, want)
+		}
+	})
+
+	t.Run("approvals are per user and per client", func(t *testing.T) {
+		s := newStore(t, f)
+		mustNoErr(t, s.Approvals().Put(ctx, oauth.Approval{UserID: "user-1", ClientID: "client-a", Scopes: []string{"read"}, GrantedAt: ref}), "put")
+		_, err := s.Approvals().Get(ctx, "user-2", "client-a")
+		wantErr(t, err, oauth.ErrNotFound, "other user")
+		_, err = s.Approvals().Get(ctx, "user-1", "client-b")
+		wantErr(t, err, oauth.ErrNotFound, "other client")
+	})
+
+	t.Run("put replaces the earlier row", func(t *testing.T) {
+		s := newStore(t, f)
+		mustNoErr(t, s.Approvals().Put(ctx, oauth.Approval{UserID: "user-1", ClientID: "client-a", Scopes: []string{"read", "write"}, GrantedAt: ref}), "put")
+		mustNoErr(t, s.Approvals().Put(ctx, oauth.Approval{UserID: "user-1", ClientID: "client-a", Scopes: []string{"read"}, GrantedAt: ref}), "replace")
+		got, err := s.Approvals().Get(ctx, "user-1", "client-a")
+		mustNoErr(t, err, "get")
+		if !equalStrings(got.Scopes, []string{"read"}) {
+			t.Fatalf("scopes = %v, want [read]", got.Scopes)
+		}
+	})
+}
