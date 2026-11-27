@@ -140,15 +140,14 @@ func TestTokenEndpointRejectsMultipleDPoPHeaders(t *testing.T) {
 	}
 }
 
-func TestTokenEndpointRefusesDPoPForPublicClients(t *testing.T) {
-	// A public client's refresh token must itself be key-bound (RFC 9449 §5).
-	// That binding is not implemented, so DPoP is refused rather than issuing
-	// a bound access token next to an unbound, stealable refresh token.
+func TestPublicClientCannotUseClientCredentialsEvenWithDPoP(t *testing.T) {
+	// DPoP no longer makes a public client special (its refresh tokens are
+	// key-bound, see dpop_refresh_test.go); the grant is still refused for it.
 	e := newTokenEnv(t)
 	k := dpoptest.NewKey(t)
 	rec := e.postForm("/oauth/token", ccForm()+"&client_id=client-public-cc", header("DPoP", k.Proof(t, e.spec("POST", tokenEndpoint))))
-	if rec.Code != http.StatusBadRequest || jsonBody(t, rec)["error"] != "invalid_request" {
-		t.Fatalf("status = %d %q, want 400 invalid_request", rec.Code, rec.Body.String())
+	if rec.Code != http.StatusBadRequest || jsonBody(t, rec)["error"] != "unauthorized_client" {
+		t.Fatalf("status = %d %q, want 400 unauthorized_client", rec.Code, rec.Body.String())
 	}
 }
 
