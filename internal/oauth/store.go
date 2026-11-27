@@ -79,6 +79,10 @@ type RefreshToken struct {
 	// It is carried unchanged along a rotation family.
 	DPoPJKT   string
 	ExpiresAt time.Time
+	// FamilyCreatedAt is when the rotation family's first token was issued. It
+	// is copied to every member on rotation so the family's age cannot be
+	// reset. Zero for a record written before it was tracked.
+	FamilyCreatedAt time.Time
 }
 
 // AccessToken records an issued access token so it can be revoked and

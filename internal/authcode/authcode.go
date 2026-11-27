@@ -48,8 +48,12 @@ const (
 
 // DefaultRefreshTokenTTL is how long a minted refresh token stays usable when
 // the Service is not told otherwise. Refresh tokens are rotated on every use,
-// so the TTL bounds one family, not one token.
+// so this bounds one token; DefaultMaxRefreshFamilyAge bounds the family.
 const DefaultRefreshTokenTTL = 30 * 24 * time.Hour
+
+// DefaultMaxRefreshFamilyAge is the longest a rotation family stays usable,
+// counted from its first token; rotation does not extend it.
+const DefaultMaxRefreshFamilyAge = 90 * 24 * time.Hour
 
 // ErrInvalidCredentials is returned for every failed resource-owner login:
 // unknown user, wrong password and empty input are indistinguishable.
@@ -75,9 +79,15 @@ type Config struct {
 	// slice is assembled.
 	Tokens *token.Service
 
-	// RefreshTokenTTL bounds a refresh-token rotation family (DefaultRefreshTokenTTL
+	// RefreshTokenTTL is the lifetime of one refresh token (DefaultRefreshTokenTTL
 	// when zero). Ignored when Tokens is nil.
-	RefreshTokenTTL time.Duration
+
+	// MaxRefreshFamilyAge is the fixed maximum age of a rotation family,
+	// measured from its first token; rotation cannot extend it, and a rotation
+	// past it fails with invalid_grant and revokes the family.
+	// DefaultMaxRefreshFamilyAge when zero.
+	MaxRefreshFamilyAge time.Duration
+	RefreshTokenTTL     time.Duration
 
 	// MaxConcurrentHashes bounds how many password-hash computations may run
 	// at once in this process. A request that cannot take a slot immediately
@@ -106,8 +116,9 @@ type Service struct {
 	codeTTL  time.Duration
 	tokenTTL time.Duration
 
-	tokens     *token.Service
-	refreshTTL time.Duration
+	tokens       *token.Service
+	refreshTTL   time.Duration
+	maxFamilyAge time.Duration
 
 	// failures rate-limits failed device user-code entry per signed-in user.
 	failures failureLimiter
@@ -136,8 +147,8 @@ func New(cfg Config) (*Service, error) {
 		insecure: cfg.AllowInsecureRedirects,
 		codeTTL:  cfg.CodeTTL, tokenTTL: cfg.AccessTokenTTL,
 		tokens:     cfg.Tokens,
-		refreshTTL: cfg.RefreshTokenTTL,
-		hashHook:   cfg.HashObserver,
+		refreshTTL: cfg.RefreshTokenTTL, maxFamilyAge: cfg.MaxRefreshFamilyAge,
+		hashHook: cfg.HashObserver,
 	}
 	maxHashes, failLimit := cfg.MaxConcurrentHashes, cfg.AuthFailureLimit
 	if maxHashes == 0 {
@@ -155,6 +166,9 @@ func New(cfg Config) (*Service, error) {
 	}
 	if s.tokenTTL <= 0 {
 		s.tokenTTL = DefaultAccessTokenTTL
+	}
+	if s.maxFamilyAge <= 0 {
+		s.maxFamilyAge = DefaultMaxRefreshFamilyAge
 	}
 	if s.refreshTTL <= 0 {
 		s.refreshTTL = DefaultRefreshTokenTTL
@@ -408,7 +422,7 @@ func (s *Service) redeemCode(ctx context.Context, client oauth.Client, p oauth.P
 	if err != nil {
 		return TokenResponse{}, err
 	}
-	resp, err := s.issueTokens(ctx, client, rec.UserID, rec.Scope, audience, true, "")
+	resp, err := s.issueTokens(ctx, client, rec.UserID, rec.Scope, audience, grantAllowed(client, GrantRefreshToken), "", time.Time{})
 	if err != nil {
 		return TokenResponse{}, err
 	}
@@ -447,7 +461,7 @@ func (s *Service) clientCredentials(ctx context.Context, client oauth.Client, p 
 	if err != nil {
 		return TokenResponse{}, err
 	}
-	return s.issueTokens(ctx, client, client.ID, scope, audience, false, "")
+	return s.issueTokens(ctx, client, client.ID, scope, audience, false, "", time.Time{})
 }
 
 // refreshToken handles grant_type=refresh_token (RFC 6749 §6): authenticates
@@ -475,6 +489,24 @@ func (s *Service) refreshToken(ctx context.Context, client oauth.Client, p oauth
 	if rec.ClientID != client.ID {
 		return TokenResponse{}, oauth.InvalidGrant("refresh token was not issued to this client")
 	}
+
+	// A family has a fixed maximum age counted from its first token; past it
+	// the family is revoked and the client must authorize again. Records
+	// written before the family start was tracked fall back to the token's own
+	// issue time (its expiry minus the token TTL).
+	familyStart := rec.FamilyCreatedAt
+	if familyStart.IsZero() {
+		familyStart = rec.ExpiresAt.Add(-s.refreshTTL)
+	}
+	if !s.clock.Now().Before(familyStart.Add(s.maxFamilyAge)) {
+		if _, err := s.store.RefreshTokens().RevokeFamily(ctx, rec.FamilyID, s.clock.Now()); err != nil {
+			return TokenResponse{}, oauth.ServerError(err)
+		}
+		return TokenResponse{}, oauth.InvalidGrant("refresh token is invalid or expired")
+	}
+	// The per-token lifetime is checked after the family cap, because issuance
+	// clamps a token's expiry to the cap: checking it first would turn a
+	// rotation at the deadline into a plain expiry that leaves the family live.
 	if !s.clock.Now().Before(rec.ExpiresAt) {
 		return TokenResponse{}, oauth.InvalidGrant("refresh token is invalid or expired")
 	}
@@ -518,7 +550,7 @@ func (s *Service) refreshToken(ctx context.Context, client oauth.Client, p oauth
 	// The replacement shares the rotated token's family so a replayed member
 	// revokes the whole lineage, including this new token (RFC 6819 §5.2.2.3 /
 	// RFC 9700 §2.1.5 cascade revocation).
-	return s.issueTokens(ctx, client, rec.UserID, scope, audience, true, rotated.FamilyID)
+	return s.issueTokens(ctx, client, rec.UserID, scope, audience, true, rotated.FamilyID, familyStart)
 }
 
 // issueTokens mints an access token and, when withRefresh is true, a refresh
@@ -526,7 +558,7 @@ func (s *Service) refreshToken(ctx context.Context, client oauth.Client, p oauth
 // token joins (empty mints a fresh family). When the Service has a token.Service
 // it uses it for signed RFC 9068 access tokens; otherwise it falls back to the
 // legacy opaque placeholder so the pre-lifecycle contract tests keep passing.
-func (s *Service) issueTokens(ctx context.Context, client oauth.Client, subject, scope, audience string, withRefresh bool, familyID string) (TokenResponse, error) {
+func (s *Service) issueTokens(ctx context.Context, client oauth.Client, subject, scope, audience string, withRefresh bool, familyID string, familyStart time.Time) (TokenResponse, error) {
 	resp := TokenResponse{TokenType: "Bearer", Scope: scope}
 
 	if s.tokens != nil {
@@ -547,7 +579,7 @@ func (s *Service) issueTokens(ctx context.Context, client oauth.Client, subject,
 	}
 
 	if withRefresh {
-		rt, err := s.mintRefreshToken(ctx, client, subject, scope, audience, familyID)
+		rt, err := s.mintRefreshToken(ctx, client, subject, scope, audience, familyID, familyStart)
 		if err != nil {
 			return TokenResponse{}, err
 		}
@@ -560,7 +592,7 @@ func (s *Service) issueTokens(ctx context.Context, client oauth.Client, subject,
 // When familyID is non-empty the token joins that existing rotation family
 // (used on rotation so a replay revokes the whole lineage); otherwise a fresh
 // family is minted (a new grant lineage).
-func (s *Service) mintRefreshToken(ctx context.Context, client oauth.Client, userID, scope, audience, familyID string) (string, error) {
+func (s *Service) mintRefreshToken(ctx context.Context, client oauth.Client, userID, scope, audience, familyID string, familyStart time.Time) (string, error) {
 	raw, err := s.rnd.Bytes(tokenBytes)
 	if err != nil {
 		return "", oauth.ServerError(err)
@@ -573,6 +605,16 @@ func (s *Service) mintRefreshToken(ctx context.Context, client oauth.Client, use
 		}
 		familyID = hex.EncodeToString(fam)
 	}
+	now := s.clock.Now()
+	if familyStart.IsZero() {
+		familyStart = now // a new family starts here
+	}
+	// The per-token TTL and the family cap are independent: the token expires
+	// at whichever comes first, so rotation never extends the family.
+	expires := now.Add(s.refreshTTL)
+	if cap := familyStart.Add(s.maxFamilyAge); cap.Before(expires) {
+		expires = cap
+	}
 	// RFC 9449 §5: bind a public client's refresh token to the proof key of
 	// the request. On rotation the presented key already equals the stored
 	// one (checked in refreshToken), so the binding carries forward.
@@ -581,14 +623,15 @@ func (s *Service) mintRefreshToken(ctx context.Context, client oauth.Client, use
 		jkt = oauth.DPoPKey(ctx)
 	}
 	rec := oauth.RefreshToken{
-		TokenHash: hashToken(value),
-		FamilyID:  familyID,
-		ClientID:  client.ID,
-		DPoPJKT:   jkt,
-		UserID:    userID,
-		Scope:     scope,
-		Audience:  audience,
-		ExpiresAt: s.clock.Now().Add(s.refreshTTL),
+		TokenHash:       hashToken(value),
+		FamilyID:        familyID,
+		ClientID:        client.ID,
+		DPoPJKT:         jkt,
+		UserID:          userID,
+		Scope:           scope,
+		Audience:        audience,
+		ExpiresAt:       expires,
+		FamilyCreatedAt: familyStart,
 	}
 	if err := s.store.RefreshTokens().Create(ctx, rec); err != nil {
 		return "", oauth.ServerError(err)
