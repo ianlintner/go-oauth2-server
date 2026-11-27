@@ -215,9 +215,9 @@ type refreshRepo struct{ db execer }
 
 func (r *refreshRepo) Create(ctx context.Context, t oauth.RefreshToken) error {
 	_, err := r.db.ExecContext(ctx,
-		`INSERT INTO refresh_tokens (token_hash, family_id, client_id, user_id, scope, audience, expires_at)
-		 VALUES (?, ?, ?, ?, ?, ?, ?)`,
-		t.TokenHash, t.FamilyID, t.ClientID, t.UserID, t.Scope, t.Audience, nanos(t.ExpiresAt))
+		`INSERT INTO refresh_tokens (token_hash, family_id, client_id, user_id, scope, audience, dpop_jkt, expires_at)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+		t.TokenHash, t.FamilyID, t.ClientID, t.UserID, t.Scope, t.Audience, t.DPoPJKT, nanos(t.ExpiresAt))
 	return createErr(err)
 }
 
@@ -231,9 +231,9 @@ func (r *refreshRepo) GetByHash(ctx context.Context, tokenHash string) (oauth.Re
 		expires int64
 	)
 	err := r.db.QueryRowContext(ctx,
-		`SELECT token_hash, family_id, client_id, user_id, scope, audience, expires_at
+		`SELECT token_hash, family_id, client_id, user_id, scope, audience, dpop_jkt, expires_at
 		 FROM refresh_tokens WHERE token_hash = ?`, tokenHash).
-		Scan(&t.TokenHash, &t.FamilyID, &t.ClientID, &t.UserID, &t.Scope, &t.Audience, &expires)
+		Scan(&t.TokenHash, &t.FamilyID, &t.ClientID, &t.UserID, &t.Scope, &t.Audience, &t.DPoPJKT, &expires)
 	if errors.Is(err, sql.ErrNoRows) {
 		return oauth.RefreshToken{}, oauth.ErrNotFound
 	}
@@ -257,9 +257,9 @@ func (r *refreshRepo) Rotate(ctx context.Context, tokenHash string, now time.Tim
 		`UPDATE refresh_tokens SET rotated_at = ?
 		 WHERE token_hash = ? AND rotated_at IS NULL
 		   AND NOT EXISTS (SELECT 1 FROM refresh_families f WHERE f.family_id = refresh_tokens.family_id)
-		 RETURNING token_hash, family_id, client_id, user_id, scope, audience, expires_at`,
+		 RETURNING token_hash, family_id, client_id, user_id, scope, audience, dpop_jkt, expires_at`,
 		nanos(now), tokenHash).
-		Scan(&t.TokenHash, &t.FamilyID, &t.ClientID, &t.UserID, &t.Scope, &t.Audience, &expires)
+		Scan(&t.TokenHash, &t.FamilyID, &t.ClientID, &t.UserID, &t.Scope, &t.Audience, &t.DPoPJKT, &expires)
 	if errors.Is(err, sql.ErrNoRows) {
 		return oauth.RefreshToken{}, missOrConsumed(ctx, r.db, `SELECT 1 FROM refresh_tokens WHERE token_hash = ?`, tokenHash)
 	}

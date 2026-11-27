@@ -35,8 +35,8 @@ func TestMigrateAppliesEmbeddedSchemaAndIsIdempotent(t *testing.T) {
 	if err := db.QueryRow(`SELECT COUNT(*) FROM schema_migrations`).Scan(&n); err != nil {
 		t.Fatal(err)
 	}
-	if n != 9 {
-		t.Fatalf("schema_migrations rows = %d, want 9 (re-open must not re-apply)", n)
+	if n != 10 {
+		t.Fatalf("schema_migrations rows = %d, want 10 (re-open must not re-apply)", n)
 	}
 	for _, table := range []string{"clients", "users", "auth_codes", "refresh_tokens", "refresh_families", "access_tokens", "device_codes", "pushed_requests", "dpop_replay", "approvals", "sessions"} {
 		var name string

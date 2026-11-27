@@ -35,25 +35,35 @@ are not claimed (see "Not implemented").
 
 ## Decisions that need the owner's review
 
-1. **Public clients cannot use DPoP.** RFC 9449 §5 requires a public client's
-   refresh token to be bound to the proof key. That binding needs a schema
-   change and is deferred, so a DPoP request from a public client is refused
-   (`invalid_request`) instead of issuing a bound access token beside an
-   unbound refresh token. Confidential clients' refresh tokens stay unbound
-   (permitted by §5) and a refresh yields an access token bound to the proof
-   presented with the refresh request.
+1. **Public clients' refresh tokens are bound to the DPoP key (§5).** When a
+   public client redeems a code (or device code) with a DPoP proof, the proof
+   key's RFC 7638 thumbprint is stored on the refresh token
+   (`refresh_tokens.dpop_jkt`). A refresh must carry a proof from the same
+   key, else `invalid_grant`; the check runs before rotation so a thief who
+   holds the token but not the key cannot burn it. Rotation carries the
+   binding forward along the family, and replay/family revocation behave as
+   before. A public client's token with no recorded key (issued without DPoP)
+   accepts only a refresh *without* a proof, so a stolen unbound token cannot
+   be captured onto an attacker's key. Confidential clients' refresh tokens
+   stay unbound (permitted by §5, they authenticate) and a refresh yields an
+   access token bound to the proof presented with the refresh request.
+   Migration `dpop_jkt` defaults to `''` (unbound) and there is no backfill:
+   a public client's refresh token cannot predate DPoP support, so no
+   existing row needed binding.
 2. **Replay store lives in the primary database when storage is persistent.**
    With a file SQLite DSN or PostgreSQL, jti entries are rows in `dpop_replay`
    (`INSERT ... ON CONFLICT` is the atomic check-and-record), so a proof
    captured within its ~90 s window cannot be replayed across a restart or, with
    PostgreSQL, against another instance. Expired rows are purged lazily. Only
    the SHA-256 of `jkt || jti` is stored. With `:memory:` storage (development,
-   conformance) the store is the bounded in-memory one: per process and lost on
-   restart. The capacity bound (100 000 live entries) is per instance and
-   approximate across instances. When the store is full or the database errors
-   the verifier fails closed (`503 temporarily_unavailable` at the token
-   endpoint, `invalid_dpop_proof` at a resource) rather than evicting live
-   entries, which would let an attacker flush it and replay a proof.
+   conformance) the store is the bounded in-memory one (100 000 entries): per
+   process and lost on restart. That is the single-process floor of RFC 9449
+   §11.1 in that mode, where the contract's restart and cross-instance
+   scenarios are draft and are **not** satisfied. The capacity bound is per
+   instance and approximate across instances. When the store is full or the
+   database errors the verifier fails closed (`503 temporarily_unavailable` at
+   the token endpoint, `invalid_dpop_proof` at a resource) rather than evicting
+   live entries, which would let an attacker flush it and replay a proof.
 3. **Proofs are checked before client authentication but recorded after it**
    at the token endpoint. The stateless checks (signature, claims, `htm`,
    `htu`, `iat`) run first, so a bad proof is still answered
@@ -91,11 +101,39 @@ are not claimed (see "Not implemented").
    - Nonces bound proof age to a window the server controls; they do not make
      the replay store (decision 2) durable. A nonce is not secret.
 
+## Upgrade and rollback (refresh-token binding)
+
+The binding is enforced by the token endpoint code, not by the database. A
+token endpoint built before `refresh_tokens.dpop_jkt` existed ignores the
+column: sharing the migrated database, it accepts a bound public-client
+refresh token **without a proof** and writes an unbound replacement, which
+silently removes the binding for that family. So:
+
+- **Rolling upgrades are not supported for this change.** Drain every old
+  token endpoint (no instance running the previous build may share the
+  database) before any DPoP-bound public-client token is issued. The
+  migration alone is safe to apply early; enabling DPoP for public clients is
+  what must wait. There is no issuance gate in the server: if instances cannot
+  be drained first, do not let public clients present DPoP proofs (for example
+  by routing the `DPoP` header away from the token endpoint) until every
+  instance runs this build.
+- **Rollback requires revoking bound families first.** Before reverting to a
+  build that predates this change, revoke every outstanding refresh token with
+  a non-empty `dpop_jkt` (for example
+  `DELETE FROM refresh_tokens WHERE dpop_jkt <> ''` — rows in
+  `refresh_families` for those families may stay) so the old build cannot
+  rotate them into unbound tokens. Affected public clients must re-authorize.
+  Leave the `dpop_jkt` column in place; the old build ignores it.
+- A mixed-version window that has already happened cannot be detected from the
+  data: an unbound replacement looks like a token legitimately issued without
+  DPoP. If one occurred, revoke the public clients' refresh tokens issued
+  during it.
+
 ## Not implemented (separate cards)
 
 - RFC 8705 mTLS: certificate-bound tokens, `tls_client_auth`, metadata. The
   contract's `mtls-request` helper does not exist in the runner yet either.
-- Refresh-token binding for public clients, `dpop_jkt` at the authorization endpoint / PAR.
+- `dpop_jkt` at the authorization endpoint / PAR.
 - RFC 9700 controls beyond those already present: in-process per-client-id
   failure budgets and a concurrent-hash bound now exist (README, "Request
   throttling"), but the contract does not express throttling, so the runner has
