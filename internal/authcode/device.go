@@ -187,6 +187,52 @@ func normalizeUserCode(in string) (string, bool) {
 	return in, true
 }
 
+// DescribeDevice looks up the live authorization for userCode so the
+// verification page can show who is asking and for what. It is read-only but
+// counts against the same per-user failure window as DecideDevice: a lookup
+// that finds a live authorization is released, an unknown or expired one is
+// not.
+//
+// When intent is not established (the request carries no trustworthy
+// same-origin metadata), intentional is false and failures are charged to a
+// separate describe-only window, so a lookup the user did not make cannot
+// exhaust the budget that guards decisions. Such lookups remain rate limited.
+func (s *Service) DescribeDevice(ctx context.Context, user oauth.User, userCode string, intentional bool) (oauth.DeviceCode, oauth.Client, error) {
+	now := s.clock.Now()
+	key := user.ID
+	if !intentional {
+		key = "describe:" + user.ID
+	}
+	if !s.failures.reserve(key, now) {
+		return oauth.DeviceCode{}, oauth.Client{}, oauth.InvalidRequest("too many failed attempts; try again later").WithStatus(429)
+	}
+	bad := oauth.InvalidRequest("the code is unknown, expired or already used")
+	norm, ok := normalizeUserCode(userCode)
+	if !ok {
+		return oauth.DeviceCode{}, oauth.Client{}, bad
+	}
+	rec, err := s.store.DeviceCodes().GetByUserCodeHash(ctx, hashCode(norm))
+	switch {
+	case errors.Is(err, oauth.ErrNotFound):
+		return oauth.DeviceCode{}, oauth.Client{}, bad
+	case err != nil:
+		// A storage failure says nothing about the code the user typed:
+		// give the slot back so an outage does not leave them locked out.
+		s.failures.release(key)
+		return oauth.DeviceCode{}, oauth.Client{}, oauth.ServerError(err)
+	}
+	if rec.Consumed || !now.Before(rec.ExpiresAt) {
+		return oauth.DeviceCode{}, oauth.Client{}, bad
+	}
+	client, err := s.store.Clients().Get(ctx, rec.ClientID)
+	if err != nil {
+		s.failures.release(key)
+		return oauth.DeviceCode{}, oauth.Client{}, oauth.ServerError(err)
+	}
+	s.failures.release(key)
+	return rec, client, nil
+}
+
 // DecideDevice records the signed-in user's decision on the authorization
 // identified by userCode. Failed entries count against the user's limit; the
 // count is reserved up front (check-and-record) so concurrent guesses cannot
@@ -214,6 +260,7 @@ func (s *Service) DecideDevice(ctx context.Context, user oauth.User, userCode st
 	case errors.Is(err, oauth.ErrNotFound), errors.Is(err, oauth.ErrAlreadyConsumed):
 		return bad()
 	case err != nil:
+		s.failures.release(user.ID) // storage failure, not a bad guess
 		return oauth.ServerError(err)
 	}
 	if !now.Before(rec.ExpiresAt) {
@@ -291,5 +338,5 @@ func (s *Service) deviceToken(ctx context.Context, client oauth.Client, p oauth.
 		}
 		return TokenResponse{}, oauth.ServerError(err)
 	}
-	return s.issueTokens(ctx, client.ID, rec.UserID, rec.Scope, audience, grantAllowed(client, GrantRefreshToken), "", "")
+	return s.issueTokens(ctx, client, rec.UserID, rec.Scope, audience, grantAllowed(client, GrantRefreshToken), "", "")
 }

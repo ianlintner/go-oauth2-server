@@ -148,10 +148,21 @@ func Run(ctx context.Context, opts Options) error {
 		closeListener()
 		return fmt.Errorf("authorization service: %w", err)
 	}
-	sessions, err := session.New([]byte(cfg.SessionSecret), oauth.SystemClock{}, cfg.CookieSecure)
+	sessions, err := session.New([]byte(cfg.SessionSecret), oauth.SystemClock{}, cfg.CookieSecure, st.Sessions())
 	if err != nil {
 		closeListener()
 		return fmt.Errorf("session manager: %w", err)
+	}
+
+	// Stateless DPoP server nonces (RFC 9449 §8–9); opt-in. Config has already
+	// required a dedicated secret of sufficient length when they are on.
+	var nonces *dpop.NonceSource
+	if cfg.DPoPNonce != config.DPoPNonceOff {
+		nonces, err = dpop.NewNonceSource(oauth.SystemClock{}, []byte(cfg.DPoPNonceSecret), dpop.DefaultNonceWindow)
+		if err != nil {
+			closeListener()
+			return fmt.Errorf("dpop nonce source: %w", err)
+		}
 	}
 
 	listener := opts.Listener
@@ -166,6 +177,15 @@ func Run(ctx context.Context, opts Options) error {
 	if cfg.MetricsEnabled {
 		metrics = observability.New()
 	}
+	// The jti replay store lives in the primary database when the adapter
+	// offers one (restart-safe, shared across instances); the in-memory store
+	// is the fallback for process-local deployments.
+	var replay dpop.ReplayStore = dpop.NewMemoryReplayStore(oauth.SystemClock{}, dpopReplayCapacity)
+	if rs, ok := st.(interface {
+		ReplayStore(oauth.Clock, int) dpop.ReplayStore
+	}); ok && cfg.StorageDSN != config.MemoryDSN {
+		replay = rs.ReplayStore(oauth.SystemClock{}, dpopReplayCapacity)
+	}
 	handler := observability.Trace(log, server.New(server.Deps{
 		Metrics:     metrics,
 		Ping:        st.Ping,
@@ -175,9 +195,11 @@ func Run(ctx context.Context, opts Options) error {
 		Issuer:      cfg.Issuer,
 		Tokens:      tokens,
 		Logger:      log,
-		// DPoP replay state is per process and lost on restart; see
-		// docs/sender-constrained.md for the accepted limits.
-		DPoP: dpop.NewVerifier(dpop.Config{Clock: oauth.SystemClock{}, Replay: dpop.NewMemoryReplayStore(oauth.SystemClock{}, dpopReplayCapacity)}),
+		// DPoP replay state lives in the primary database when storage is
+		// persistent (see replay above); server nonces are stateless.
+		DPoP:               dpop.NewVerifier(dpop.Config{Clock: oauth.SystemClock{}, Replay: replay}),
+		DPoPNonces:         nonces,
+		DPoPNonceResources: cfg.DPoPNonce == config.DPoPNonceAll,
 
 		RegistrationEnabled: cfg.DynamicRegistration,
 		RegistrationScopes:  []string{"openid", "read"},

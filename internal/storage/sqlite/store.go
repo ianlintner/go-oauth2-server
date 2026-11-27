@@ -12,6 +12,7 @@ import (
 	"fmt"
 	"net/url"
 
+	"github.com/ianlintner/go-oauth2-server/internal/dpop"
 	"github.com/ianlintner/go-oauth2-server/internal/oauth"
 	sqlitedrv "modernc.org/sqlite"
 )
@@ -85,6 +86,12 @@ func Open(dsn string) (*Store, error) {
 // Ping reports whether the database is reachable.
 func (s *Store) Ping(ctx context.Context) error { return s.db.PingContext(ctx) }
 
+// ReplayStore returns a DPoP jti replay store in this database (table
+// dpop_replay), so proofs stay recorded across restarts and processes.
+func (s *Store) ReplayStore(clock oauth.Clock, max int) dpop.ReplayStore {
+	return dpop.NewSQLReplayStore(s.db, clock, max)
+}
+
 // Close closes the database. It is safe to call more than once.
 func (s *Store) Close() error { return s.db.Close() }
 
@@ -130,6 +137,8 @@ type repos struct {
 	access  *accessTokenRepo
 	device  *deviceRepo
 	pushed  *pushedRepo
+	approve *approvalRepo
+	session *sessionRepo
 }
 
 func newRepos(db execer) repos {
@@ -141,6 +150,8 @@ func newRepos(db execer) repos {
 		access:  &accessTokenRepo{db},
 		device:  &deviceRepo{db},
 		pushed:  &pushedRepo{db},
+		approve: &approvalRepo{db},
+		session: &sessionRepo{db},
 	}
 }
 
@@ -149,6 +160,9 @@ func (r repos) DeviceCodes() oauth.DeviceCodeRepository { return r.device }
 
 // PushedRequests returns the RFC 9126 pushed-request repository.
 func (r repos) PushedRequests() oauth.PushedRequestRepository { return r.pushed }
+
+// Sessions returns the resource-owner session repository.
+func (r repos) Sessions() oauth.SessionRepository { return r.session }
 
 // Clients returns the client repository.
 func (r repos) Clients() oauth.ClientRepository { return r.clients }
@@ -176,3 +190,6 @@ func createErr(err error) error {
 	}
 	return err
 }
+
+// Approvals returns the resource-owner approval repository.
+func (r repos) Approvals() oauth.ApprovalRepository { return r.approve }

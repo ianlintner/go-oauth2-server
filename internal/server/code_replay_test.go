@@ -23,6 +23,10 @@ func (e *tokenEnv) authorizeCode(t *testing.T, clientID string) string {
 	if err != nil && !errors.Is(err, oauth.ErrConflict) {
 		t.Fatal(err)
 	}
+	// Main's consent gate issues a code only for an explicitly approved
+	// client; seed an approval so this helper models a consented resource
+	// owner and the authorize response carries the code directly.
+	approveClient(t, e.store, "user-1", clientID)
 	rec := e.get("/oauth/authorize?"+authQuery(clientID, callback, nil), cookie(e.login(t)))
 	if rec.Code != http.StatusFound {
 		t.Fatalf("authorize = %d %q", rec.Code, rec.Body.String())

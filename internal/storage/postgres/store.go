@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"strings"
 
+	"github.com/ianlintner/go-oauth2-server/internal/dpop"
 	"github.com/ianlintner/go-oauth2-server/internal/oauth"
 	"github.com/jackc/pgx/v5/pgconn"
 	_ "github.com/jackc/pgx/v5/stdlib"
@@ -45,7 +46,13 @@ func Open(dsn string) (*Store, error) {
 	return &Store{db: db, repos: newRepos(rebindDB{db})}, nil
 }
 func (s *Store) Ping(ctx context.Context) error { return s.db.PingContext(ctx) }
-func (s *Store) Close() error                   { return s.db.Close() }
+
+// ReplayStore returns a DPoP jti replay store in this database (table
+// dpop_replay), shared by every instance that uses it.
+func (s *Store) ReplayStore(clock oauth.Clock, max int) dpop.ReplayStore {
+	return dpop.NewSQLReplayStore(rebindDB{s.db}, clock, max)
+}
+func (s *Store) Close() error { return s.db.Close() }
 func (s *Store) WithTx(ctx context.Context, fn func(context.Context, oauth.Repositories) error) error {
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
@@ -89,12 +96,16 @@ type repos struct {
 	access  *accessTokenRepo
 	device  *deviceRepo
 	pushed  *pushedRepo
+	approve *approvalRepo
+	session *sessionRepo
 }
 
 func newRepos(db execer) repos {
 	return repos{
 		clients: &clientRepo{db}, users: &userRepo{db}, codes: &authCodeRepo{db},
 		refresh: &refreshRepo{db}, access: &accessTokenRepo{db}, device: &deviceRepo{db}, pushed: &pushedRepo{db},
+		approve: &approvalRepo{db},
+		session: &sessionRepo{db},
 	}
 }
 func (r repos) Clients() oauth.ClientRepository               { return r.clients }
@@ -104,6 +115,7 @@ func (r repos) RefreshTokens() oauth.RefreshTokenRepository   { return r.refresh
 func (r repos) AccessTokens() oauth.AccessTokenRepository     { return r.access }
 func (r repos) DeviceCodes() oauth.DeviceCodeRepository       { return r.device }
 func (r repos) PushedRequests() oauth.PushedRequestRepository { return r.pushed }
+func (r repos) Sessions() oauth.SessionRepository             { return r.session }
 
 // txBeginner is implemented by the pool-bound execer, so a repository that is
 // not already inside a transaction can open one for a multi-statement operation.
@@ -138,3 +150,4 @@ func createErr(err error) error {
 	}
 	return err
 }
+func (r repos) Approvals() oauth.ApprovalRepository { return r.approve }

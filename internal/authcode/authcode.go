@@ -361,12 +361,11 @@ func (s *Service) Token(ctx context.Context, authorization string, p oauth.Param
 		return TokenResponse{}, oauth.UnauthorizedClient("client may not use this grant type")
 	}
 	if oauth.DPoPKey(ctx) != "" {
-		// RFC 9449 §5: a public client's refresh token must be bound to the
-		// proof key too. That binding is not implemented, so refuse DPoP for
-		// public clients instead of issuing a key-bound access token next to
-		// an unbound, stealable refresh token. Without a token service there
-		// is no JWT to carry cnf, so DPoP cannot be honored either.
-		if client.Public || s.tokens == nil {
+		// Without a token service there is no JWT to carry cnf, so DPoP
+		// cannot be honored. A public client may use DPoP because its
+		// refresh tokens are bound to the proof key (RFC 9449 §5, see
+		// mintRefreshToken / refreshToken).
+		if s.tokens == nil {
 			return TokenResponse{}, oauth.InvalidRequest("DPoP is not supported for this client")
 		}
 	}
@@ -445,7 +444,7 @@ func (s *Service) redeemCode(ctx context.Context, client oauth.Client, p oauth.P
 	if err != nil {
 		return TokenResponse{}, err
 	}
-	resp, err := s.issueTokens(ctx, client.ID, rec.UserID, rec.Scope, audience, true, codeFamilyID(rec.CodeHash), codeJTI(rec.CodeHash))
+	resp, err := s.issueTokens(ctx, client, rec.UserID, rec.Scope, audience, true, codeFamilyID(rec.CodeHash), codeJTI(rec.CodeHash))
 	if err != nil {
 		return TokenResponse{}, err
 	}
@@ -484,7 +483,7 @@ func (s *Service) clientCredentials(ctx context.Context, client oauth.Client, p 
 	if err != nil {
 		return TokenResponse{}, err
 	}
-	return s.issueTokens(ctx, client.ID, client.ID, scope, audience, false, "", "")
+	return s.issueTokens(ctx, client, client.ID, scope, audience, false, "", "")
 }
 
 // refreshToken handles grant_type=refresh_token (RFC 6749 §6): authenticates
@@ -533,6 +532,15 @@ func (s *Service) refreshToken(ctx context.Context, client oauth.Client, p oauth
 		return TokenResponse{}, err
 	}
 
+	// RFC 9449 §5: a public client's refresh token is bound to the proof key
+	// it was issued for. Checked before rotation so a thief with the token
+	// but not the key cannot burn the legitimate token. A token with no
+	// recorded key (non-DPoP issuance) accepts only a request without a
+	// proof, so a stolen unbound token cannot be upgraded onto a new key.
+	if client.Public && rec.DPoPJKT != oauth.DPoPKey(ctx) {
+		return TokenResponse{}, oauth.InvalidGrant("refresh token is bound to a different DPoP key")
+	}
+
 	// Consume (rotate) the presented token within its family. On replay the
 	// family is revoked and the grant refused (reuse detection).
 	rotated, err := s.rotateRefresh(ctx, hash, rec.FamilyID)
@@ -546,7 +554,7 @@ func (s *Service) refreshToken(ctx context.Context, client oauth.Client, p oauth
 	// The replacement shares the rotated token's family so a replayed member
 	// revokes the whole lineage, including this new token (RFC 6819 §5.2.2.3 /
 	// RFC 9700 §2.1.5 cascade revocation).
-	return s.issueTokens(ctx, client.ID, rec.UserID, scope, audience, true, rotated.FamilyID, "")
+	return s.issueTokens(ctx, client, rec.UserID, scope, audience, true, rotated.FamilyID, "")
 }
 
 // issueTokens mints an access token and, when withRefresh is true, a refresh
@@ -554,11 +562,11 @@ func (s *Service) refreshToken(ctx context.Context, client oauth.Client, p oauth
 // token joins (empty mints a fresh family). When the Service has a token.Service
 // it uses it for signed RFC 9068 access tokens; otherwise it falls back to the
 // legacy opaque placeholder so the pre-lifecycle contract tests keep passing.
-func (s *Service) issueTokens(ctx context.Context, clientID, subject, scope, audience string, withRefresh bool, familyID, jti string) (TokenResponse, error) {
+func (s *Service) issueTokens(ctx context.Context, client oauth.Client, subject, scope, audience string, withRefresh bool, familyID, jti string) (TokenResponse, error) {
 	resp := TokenResponse{TokenType: "Bearer", Scope: scope}
 
 	if s.tokens != nil {
-		at, err := s.tokens.Issue(ctx, token.IssueParams{ClientID: clientID, Subject: subject, Scope: scope, Audience: []string{audience}, JKT: oauth.DPoPKey(ctx), JTI: jti})
+		at, err := s.tokens.Issue(ctx, token.IssueParams{ClientID: client.ID, Subject: subject, Scope: scope, Audience: []string{audience}, JKT: oauth.DPoPKey(ctx), JTI: jti})
 		if err != nil {
 			return TokenResponse{}, err
 		}
@@ -575,7 +583,7 @@ func (s *Service) issueTokens(ctx context.Context, clientID, subject, scope, aud
 	}
 
 	if withRefresh {
-		rt, err := s.mintRefreshToken(ctx, clientID, subject, scope, audience, familyID)
+		rt, err := s.mintRefreshToken(ctx, client, subject, scope, audience, familyID)
 		if err != nil {
 			return TokenResponse{}, err
 		}
@@ -588,7 +596,7 @@ func (s *Service) issueTokens(ctx context.Context, clientID, subject, scope, aud
 // When familyID is non-empty the token joins that existing rotation family
 // (used on rotation so a replay revokes the whole lineage); otherwise a fresh
 // family is minted (a new grant lineage).
-func (s *Service) mintRefreshToken(ctx context.Context, clientID, userID, scope, audience, familyID string) (string, error) {
+func (s *Service) mintRefreshToken(ctx context.Context, client oauth.Client, userID, scope, audience, familyID string) (string, error) {
 	raw, err := s.rnd.Bytes(tokenBytes)
 	if err != nil {
 		return "", oauth.ServerError(err)
@@ -601,10 +609,18 @@ func (s *Service) mintRefreshToken(ctx context.Context, clientID, userID, scope,
 		}
 		familyID = hex.EncodeToString(fam)
 	}
+	// RFC 9449 §5: bind a public client's refresh token to the proof key of
+	// the request. On rotation the presented key already equals the stored
+	// one (checked in refreshToken), so the binding carries forward.
+	jkt := ""
+	if client.Public {
+		jkt = oauth.DPoPKey(ctx)
+	}
 	rec := oauth.RefreshToken{
 		TokenHash: hashToken(value),
 		FamilyID:  familyID,
-		ClientID:  clientID,
+		ClientID:  client.ID,
+		DPoPJKT:   jkt,
 		UserID:    userID,
 		Scope:     scope,
 		Audience:  audience,

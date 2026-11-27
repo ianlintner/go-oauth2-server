@@ -15,6 +15,7 @@ import (
 	"net/url"
 	"os"
 	"regexp"
+	"time"
 
 	"github.com/ianlintner/go-oauth2-server/internal/oauth"
 	"github.com/ianlintner/go-oauth2-server/internal/secret"
@@ -227,17 +228,39 @@ func (c Client) validate() error {
 	return nil
 }
 
+// approvableScopes is the scope set a seeded approval covers: the client's
+// scopes, limited to the user's scopes when the user has any (a user with no
+// scopes places no restriction, matching authcode.CheckUserScope).
+func approvableScopes(client, user []string) []string {
+	if len(user) == 0 {
+		return append([]string(nil), client...)
+	}
+	allowed := make(map[string]bool, len(user))
+	for _, s := range user {
+		allowed[s] = true
+	}
+	out := []string{}
+	for _, s := range client {
+		if allowed[s] {
+			out = append(out, s)
+		}
+	}
+	return out
+}
+
 // Apply writes the seed to st in one transaction, hashing every secret and
 // password, so a failure leaves nothing behind. Registered redirect URIs are
 // stored verbatim. Signing keys are not applied here: the seed carries no key
 // material and key provisioning belongs to the Signer.
 func Apply(ctx context.Context, st oauth.Store, rnd oauth.Random, seed *Seed) error {
 	return st.WithTx(ctx, func(ctx context.Context, tx oauth.Repositories) error {
+		clientScopes := make(map[string][]string, len(seed.Clients))
 		for _, c := range seed.Clients {
 			scopes := c.Scopes
 			if len(scopes) == 0 {
 				scopes = defaultClientScope
 			}
+			clientScopes[c.ClientID] = scopes
 			rec := oauth.Client{
 				ID:           c.ClientID,
 				Public:       c.Public,
@@ -283,6 +306,18 @@ func Apply(ctx context.Context, st oauth.Store, rnd oauth.Random, seed *Seed) er
 			}
 			if err := tx.Users().Create(ctx, rec); err != nil {
 				return fmt.Errorf("seed user %q: %w", u.Username, err)
+			}
+			// auto_approve_clients become explicit approval rows, scoped to
+			// what the client may request and the user may grant.
+			for _, id := range u.AutoApproveClients {
+				ap := oauth.Approval{
+					UserID: rec.ID, ClientID: id,
+					Scopes:    approvableScopes(clientScopes[id], u.Scopes),
+					GrantedAt: time.Now().UTC(),
+				}
+				if err := tx.Approvals().Put(ctx, ap); err != nil {
+					return fmt.Errorf("seed approval of client %q for user %q: %w", id, u.Username, err)
+				}
 			}
 		}
 		return nil

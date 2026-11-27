@@ -47,6 +47,19 @@ func newTokenEnvWrapped(t *testing.T, wrap func(oauth.Store) oauth.Store) *token
 
 func newTokenEnvFull(t *testing.T, wrap func(oauth.Store) oauth.Store, replay func(oauth.Clock) dpop.ReplayStore) *tokenEnv {
 	t.Helper()
+	return newTokenEnvDepsWithWrap(t, wrap, replay, nil)
+}
+
+// newTokenEnvDeps is newTokenEnvWithReplay with a hook to adjust the router's
+// Deps; the hook receives the env clock so it can build clock-driven parts.
+func newTokenEnvDeps(t *testing.T, replay func(oauth.Clock) dpop.ReplayStore, tweak func(oauth.Clock, *server.Deps)) *tokenEnv {
+	return newTokenEnvDepsWithWrap(t, nil, replay, tweak)
+}
+
+// newTokenEnvDepsWithWrap is the shared builder: wrap optionally replaces the
+// store the token/authcode services see, and tweak adjusts the router Deps.
+func newTokenEnvDepsWithWrap(t *testing.T, wrap func(oauth.Store) oauth.Store, replay func(oauth.Clock) dpop.ReplayStore, tweak func(oauth.Clock, *server.Deps)) *tokenEnv {
+	t.Helper()
 	st, err := sqlite.Open(sqlite.MemoryDSN)
 	if err != nil {
 		t.Fatal(err)
@@ -107,12 +120,16 @@ func newTokenEnvFull(t *testing.T, wrap func(oauth.Store) oauth.Store, replay fu
 	if err != nil {
 		t.Fatal(err)
 	}
-	sess, err := session.New([]byte("0123456789abcdef0123456789abcdef"), clk, true)
+	sess, err := session.New([]byte("0123456789abcdef0123456789abcdef"), clk, true, st.Sessions())
 	if err != nil {
 		t.Fatal(err)
 	}
 	proofs := dpop.NewVerifier(dpop.Config{Clock: clk, Replay: replay(clk)})
-	h := server.New(server.Deps{Service: svc, Sessions: sess, Issuer: issuer, Conformance: true, Tokens: tokens, DPoP: proofs})
+	deps := server.Deps{Service: svc, Sessions: sess, Issuer: issuer, Conformance: true, Tokens: tokens, DPoP: proofs}
+	if tweak != nil {
+		tweak(clk, &deps)
+	}
+	h := server.New(deps)
 	env := &handlerEnv{h: h, store: st, clock: clk}
 	return &tokenEnv{handlerEnv: env, tokens: tokens}
 }
@@ -341,6 +358,7 @@ func TestTokenEndpointIssuesSignedAccessToken(t *testing.T) {
 	}()}); err != nil {
 		t.Fatal(err)
 	}
+	approveClient(t, e.store, "user-1", "client-a")
 	c := e.login(t)
 	rec := e.get("/oauth/authorize?"+authQuery("client-a", callback, nil), cookie(c))
 	if rec.Code != http.StatusFound {
