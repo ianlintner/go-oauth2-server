@@ -9,9 +9,9 @@
 //
 // Scope of this slice: proof syntax, signature, header/claim checks, ath
 // binding, optional stateless server nonces (RFC 9449 §8, §9; see
-// NonceSource) and single-process jti replay detection. A replay store shared
-// across instances or restarts is NOT implemented; see
-// docs/sender-constrained.md.
+// NonceSource) and jti replay detection (in-memory, or SQLReplayStore for a
+// store that survives restarts and is shared across instances). See
+// docs/sender-constrained.md for deployment limits.
 package dpop
 
 import (
