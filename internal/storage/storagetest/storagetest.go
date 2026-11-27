@@ -359,6 +359,32 @@ func testRefreshTokens(t *testing.T, f Factory) {
 		wantErr(t, err, oauth.ErrAlreadyConsumed, "rotate replay")
 	})
 
+	t.Run("dpop key binding round-trips through get and rotate", func(t *testing.T) {
+		s := newStore(t, f)
+		bound := sampleRefresh("bound", "fam-1")
+		bound.DPoPJKT = "jkt-thumbprint-1"
+		unbound := sampleRefresh("unbound", "fam-2")
+		mustNoErr(t, s.RefreshTokens().Create(ctx, bound), "create bound")
+		mustNoErr(t, s.RefreshTokens().Create(ctx, unbound), "create unbound")
+
+		got, err := s.RefreshTokens().GetByHash(ctx, "bound")
+		mustNoErr(t, err, "get bound")
+		if got.DPoPJKT != "jkt-thumbprint-1" {
+			t.Fatalf("GetByHash DPoPJKT = %q, want the stored thumbprint", got.DPoPJKT)
+		}
+		got, err = s.RefreshTokens().Rotate(ctx, "bound", ref)
+		mustNoErr(t, err, "rotate bound")
+		if got.DPoPJKT != "jkt-thumbprint-1" {
+			t.Fatalf("Rotate DPoPJKT = %q, want the stored thumbprint", got.DPoPJKT)
+		}
+		// The zero value means unbound and must not read back as anything else.
+		got, err = s.RefreshTokens().GetByHash(ctx, "unbound")
+		mustNoErr(t, err, "get unbound")
+		if got.DPoPJKT != "" {
+			t.Fatalf("unbound DPoPJKT = %q, want empty", got.DPoPJKT)
+		}
+	})
+
 	t.Run("unknown token is not found", func(t *testing.T) {
 		s := newStore(t, f)
 		_, err := s.RefreshTokens().Rotate(ctx, "nope", ref)
