@@ -42,14 +42,18 @@ are not claimed (see "Not implemented").
    unbound refresh token. Confidential clients' refresh tokens stay unbound
    (permitted by §5) and a refresh yields an access token bound to the proof
    presented with the refresh request.
-2. **Replay store is in-memory, bounded (100 000 entries) and per process.**
-   A restart or a second instance forgets seen proofs, so a proof captured
-   within its ~90 s window can be replayed across a restart/instance. This is
-   the single-process floor of RFC 9449 §11.1; the contract's restart and
-   cross-instance scenarios are draft and are **not** satisfied. When the
-   store is full the verifier fails closed (`503 temporarily_unavailable` at
-   the token endpoint, `invalid_dpop_proof` at a resource) rather than evicting
-   live entries, which would let an attacker flush it and replay a proof.
+2. **Replay store lives in the primary database when storage is persistent.**
+   With a file SQLite DSN or PostgreSQL, jti entries are rows in `dpop_replay`
+   (`INSERT ... ON CONFLICT` is the atomic check-and-record), so a proof
+   captured within its ~90 s window cannot be replayed across a restart or, with
+   PostgreSQL, against another instance. Expired rows are purged lazily. Only
+   the SHA-256 of `jkt || jti` is stored. With `:memory:` storage (development,
+   conformance) the store is the bounded in-memory one: per process and lost on
+   restart. The capacity bound (100 000 live entries) is per instance and
+   approximate across instances. When the store is full or the database errors
+   the verifier fails closed (`503 temporarily_unavailable` at the token
+   endpoint, `invalid_dpop_proof` at a resource) rather than evicting live
+   entries, which would let an attacker flush it and replay a proof.
 3. **Proofs are checked before client authentication but recorded after it**
    at the token endpoint. The stateless checks (signature, claims, `htm`,
    `htu`, `iat`) run first, so a bad proof is still answered
@@ -85,14 +89,13 @@ are not claimed (see "Not implemented").
    - The nonce check runs after the other stateless checks and before the
      `jti` is recorded, so a proof sent back for a nonce does not burn its jti.
    - Nonces bound proof age to a window the server controls; they do not make
-     the in-memory replay store (decision 2) durable. A nonce is not secret.
+     the replay store (decision 2) durable. A nonce is not secret.
 
 ## Not implemented (separate cards)
 
 - RFC 8705 mTLS: certificate-bound tokens, `tls_client_auth`, metadata. The
   contract's `mtls-request` helper does not exist in the runner yet either.
-- Persistent/shared replay store, refresh-token binding for
-  public clients, `dpop_jkt` at the authorization endpoint / PAR.
+- Refresh-token binding for public clients, `dpop_jkt` at the authorization endpoint / PAR.
 - RFC 9700 controls beyond those already present: in-process per-client-id
   failure budgets and a concurrent-hash bound now exist (README, "Request
   throttling"), but the contract does not express throttling, so the runner has
