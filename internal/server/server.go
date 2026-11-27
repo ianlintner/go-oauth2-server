@@ -47,6 +47,13 @@ type Deps struct {
 	// token request is ignored and bearer tokens are issued.
 	DPoP *dpop.Verifier
 
+	// DPoPNonces, when non-nil (and DPoP is set), requires a current
+	// server-provided nonce in DPoP proofs at the token endpoint (RFC 9449
+	// §8) and answers with a fresh DPoP-Nonce header. DPoPNonceResources
+	// extends the requirement to /oauth/userinfo (§9). Both are opt-in.
+	DPoPNonces         *dpop.NonceSource
+	DPoPNonceResources bool
+
 	// Logger receives internal error causes, which are never sent to clients.
 	Logger *slog.Logger
 

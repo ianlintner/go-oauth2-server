@@ -62,6 +62,7 @@ type proofSpec struct {
 	omit      []string
 	ath       string
 	embedPriv bool
+	nonce     string
 }
 
 func (s proofSpec) sign(t *testing.T, now time.Time, k key) string {
@@ -91,6 +92,9 @@ func (s proofSpec) sign(t *testing.T, now time.Time, k key) string {
 	}
 	if s.ath != "" {
 		claims["ath"] = s.ath
+	}
+	if s.nonce != "" {
+		claims["nonce"] = s.nonce
 	}
 	for _, name := range s.omit {
 		delete(claims, name)
