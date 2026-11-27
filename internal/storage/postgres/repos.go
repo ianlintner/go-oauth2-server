@@ -119,6 +119,40 @@ func (r *userRepo) GetByUsername(ctx context.Context, username string) (oauth.Us
 	return u, nil
 }
 
+// --- sessions ---
+
+type sessionRepo struct{ db execer }
+
+func (r *sessionRepo) Create(ctx context.Context, s oauth.Session) error {
+	_, err := r.db.ExecContext(ctx,
+		`INSERT INTO sessions (id, username, expires_at) VALUES (?, ?, ?)`,
+		s.ID, s.Username, nanos(s.ExpiresAt))
+	return createErr(err)
+}
+
+func (r *sessionRepo) Active(ctx context.Context, id, username string, now time.Time) (bool, error) {
+	var one int
+	err := r.db.QueryRowContext(ctx,
+		`SELECT 1 FROM sessions WHERE id = ? AND username = ? AND revoked_at IS NULL AND expires_at > ?`,
+		id, username, nanos(now)).Scan(&one)
+	if errors.Is(err, sql.ErrNoRows) {
+		return false, nil
+	}
+	return err == nil, err
+}
+
+func (r *sessionRepo) Revoke(ctx context.Context, id string, now time.Time) error {
+	_, err := r.db.ExecContext(ctx,
+		`UPDATE sessions SET revoked_at = ? WHERE id = ? AND revoked_at IS NULL`, nanos(now), id)
+	return err
+}
+
+func (r *sessionRepo) RevokeAllForUser(ctx context.Context, username string, now time.Time) error {
+	_, err := r.db.ExecContext(ctx,
+		`UPDATE sessions SET revoked_at = ? WHERE username = ? AND revoked_at IS NULL`, nanos(now), username)
+	return err
+}
+
 // --- authorization codes ---
 
 type authCodeRepo struct{ db execer }

@@ -50,23 +50,48 @@ are not claimed (see "Not implemented").
    store is full the verifier fails closed (`503 temporarily_unavailable` at
    the token endpoint, `invalid_dpop_proof` at a resource) rather than evicting
    live entries, which would let an attacker flush it and replay a proof.
-3. **Proofs are verified before client authentication** at the token endpoint,
-   so an unauthenticated caller can consume replay-store capacity with valid
-   self-signed proofs (a fail-closed denial of service of DPoP issuance, bounded
-   by the 90 s lifetime). Rate limiting (RFC 9700 §2.5, below) is the intended
-   mitigation and is not yet present.
+3. **Proofs are checked before client authentication but recorded after it**
+   at the token endpoint. The stateless checks (signature, claims, `htm`,
+   `htu`, `iat`) run first, so a bad proof is still answered
+   `invalid_dpop_proof`; the `jti` is added to the replay store only once the
+   client has authenticated and may use the grant, so a caller that fails
+   client authentication does not consume replay-store capacity. An
+   authenticated client can still use capacity; per-client throttling
+   (RFC 9700 §2.5, below) is not yet present.
 4. **`htu` is built from the configured issuer, not the `Host` header**, so
    proofs bind to the public origin even behind a proxy. A deployment whose
    public URL differs from `OAUTH2_ISSUER` will reject all proofs.
-5. **No server nonce.** `use_dpop_nonce` / `DPoP-Nonce` (RFC 9449 §8–9) are not
-   implemented. Without a nonce a client can pre-generate proofs with a chosen
-   future `iat` within the 30 s skew; the exposure is bounded by that window.
+5. **Server nonces are opt-in and stateless** (RFC 9449 §8–9).
+   `OAUTH2_DPOP_NONCE=off|token|all` (default `off`). `token` requires a
+   current nonce in proofs at the token endpoint; `all` also requires one at
+   `/oauth/userinfo`. With nonces off, a client can pre-generate proofs with a
+   chosen future `iat` within the 30 s skew; the exposure is bounded by that
+   window. With nonces on, a proof is only valid after a server round trip.
+   - A nonce is `base64url(ts || HMAC-SHA256(secret, ts))`, `ts` being the
+     start of a fixed 5-minute window. The current and the previous window are
+     accepted, so a client holds a nonce for 5–10 minutes. No state is kept:
+     any instance with the same secret accepts any instance's nonces. The MAC
+     is compared in constant time.
+   - `OAUTH2_DPOP_NONCE_SECRET` (≥ 32 bytes) is required whenever nonces are
+     on and the server refuses to start without it, in every environment. It
+     must differ from `OAUTH2_SESSION_SECRET` (never derived from it), is
+     refused when set while nonces are off, and is never logged. Rotating it
+     invalidates outstanding nonces; clients recover via `use_dpop_nonce`.
+   - A missing, malformed, forged or stale `nonce` claim is answered with
+     `400 use_dpop_nonce` + `DPoP-Nonce` at the token endpoint and
+     `401` + `WWW-Authenticate: DPoP error="use_dpop_nonce"` + `DPoP-Nonce`
+     at a resource. Token endpoint responses (and, in `all` mode, userinfo
+     responses to DPoP requests) always carry a fresh `DPoP-Nonce`.
+   - The nonce check runs after the other stateless checks and before the
+     `jti` is recorded, so a proof sent back for a nonce does not burn its jti.
+   - Nonces bound proof age to a window the server controls; they do not make
+     the in-memory replay store (decision 2) durable. A nonce is not secret.
 
 ## Not implemented (separate cards)
 
 - RFC 8705 mTLS: certificate-bound tokens, `tls_client_auth`, metadata. The
   contract's `mtls-request` helper does not exist in the runner yet either.
-- DPoP server nonces, persistent/shared replay store, refresh-token binding for
+- Persistent/shared replay store, refresh-token binding for
   public clients, `dpop_jkt` at the authorization endpoint / PAR.
 - RFC 9700 controls beyond those already present: in-process per-client-id
   failure budgets and a concurrent-hash bound now exist (README, "Request
@@ -77,11 +102,12 @@ are not claimed (see "Not implemented").
 
 ## Conformance status
 
-Pinned contract: `b968cb1`. Of the 35 `sender-constrained` scenarios, 7
+Pinned contract: `771d0d6`. Of the 35 `sender-constrained` scenarios, 7
 are `stable` and exercised against this server in `scripts/conformance-run.sh`:
 `dpop.token-type-dpop`, `jti-required`, `jti-replay`, `htm-binding`,
 `htu-binding`, `typ-header`, `iat-stale` — all pass. The rest are `draft`
-(runner helpers, nonce mode, clock control, mTLS transport missing) and are
+(runner helpers, nonce mode, clock control, mTLS transport missing; the
+server side of nonces is implemented but the runner cannot yet drive it) and are
 reported as DEFER, not as passes. Nothing here asserts RFC 9449 compliance
 beyond those fixtures and the unit/handler tests in `internal/dpop` and
 `internal/server`.

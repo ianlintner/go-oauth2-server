@@ -148,10 +148,21 @@ func Run(ctx context.Context, opts Options) error {
 		closeListener()
 		return fmt.Errorf("authorization service: %w", err)
 	}
-	sessions, err := session.New([]byte(cfg.SessionSecret), oauth.SystemClock{}, cfg.CookieSecure)
+	sessions, err := session.New([]byte(cfg.SessionSecret), oauth.SystemClock{}, cfg.CookieSecure, st.Sessions())
 	if err != nil {
 		closeListener()
 		return fmt.Errorf("session manager: %w", err)
+	}
+
+	// Stateless DPoP server nonces (RFC 9449 §8–9); opt-in. Config has already
+	// required a dedicated secret of sufficient length when they are on.
+	var nonces *dpop.NonceSource
+	if cfg.DPoPNonce != config.DPoPNonceOff {
+		nonces, err = dpop.NewNonceSource(oauth.SystemClock{}, []byte(cfg.DPoPNonceSecret), dpop.DefaultNonceWindow)
+		if err != nil {
+			closeListener()
+			return fmt.Errorf("dpop nonce source: %w", err)
+		}
 	}
 
 	listener := opts.Listener
@@ -177,7 +188,9 @@ func Run(ctx context.Context, opts Options) error {
 		Logger:      log,
 		// DPoP replay state is per process and lost on restart; see
 		// docs/sender-constrained.md for the accepted limits.
-		DPoP: dpop.NewVerifier(dpop.Config{Clock: oauth.SystemClock{}, Replay: dpop.NewMemoryReplayStore(oauth.SystemClock{}, dpopReplayCapacity)}),
+		DPoP:               dpop.NewVerifier(dpop.Config{Clock: oauth.SystemClock{}, Replay: dpop.NewMemoryReplayStore(oauth.SystemClock{}, dpopReplayCapacity)}),
+		DPoPNonces:         nonces,
+		DPoPNonceResources: cfg.DPoPNonce == config.DPoPNonceAll,
 
 		RegistrationEnabled: cfg.DynamicRegistration,
 		RegistrationScopes:  []string{"openid", "read"},

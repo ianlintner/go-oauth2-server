@@ -36,6 +36,9 @@ const (
 	// minSessionSecretLen is the minimum length in bytes for the cookie/session
 	// secret.
 	minSessionSecretLen = 32
+	// minDPoPNonceSecretLen is the minimum length in bytes of the DPoP nonce
+	// HMAC secret.
+	minDPoPNonceSecretLen = 32
 
 	// Defaults for the HTTP server limits. The largest expected request is a
 	// small form body, so these are generous for normal clients; operators
@@ -96,7 +99,25 @@ type Config struct {
 	// minute (OAUTH2_AUTH_FAILURES_PER_MINUTE). 0 selects the default (10); a
 	// negative value disables it. Both are per process.
 	AuthFailureLimit int
+
+	// DPoPNonce selects RFC 9449 §8–9 server nonces (OAUTH2_DPOP_NONCE):
+	// off (default), token (token endpoint only) or all (token endpoint and
+	// protected resources). DPoPNonceSecret (OAUTH2_DPOP_NONCE_SECRET) keys the
+	// stateless nonce MAC; it is required whenever nonces are on, is never
+	// derived from the session secret and is never printed.
+	DPoPNonce       DPoPNonceMode
+	DPoPNonceSecret Secret
 }
+
+// DPoPNonceMode says where DPoP server nonces are required.
+type DPoPNonceMode string
+
+// Supported DPoP nonce modes.
+const (
+	DPoPNonceOff   DPoPNonceMode = "off"
+	DPoPNonceToken DPoPNonceMode = "token"
+	DPoPNonceAll   DPoPNonceMode = "all"
+)
 
 // Load reads configuration through getenv (os.Getenv when nil) and validates
 // it. On any problem it returns a zero Config and an error naming every
@@ -153,6 +174,31 @@ func Load(getenv func(string) string) (Config, error) {
 		fail("OAUTH2_SESSION_SECRET is required")
 	case n < minSessionSecretLen:
 		fail("OAUTH2_SESSION_SECRET must be at least %d bytes (got %d)", minSessionSecretLen, n)
+	}
+
+	// DPoP server nonces. The secret is a dedicated one: reusing the session
+	// secret would let a leak of either weaken the other.
+	cfg.DPoPNonce = DPoPNonceMode(strings.ToLower(get("OAUTH2_DPOP_NONCE")))
+	cfg.DPoPNonceSecret = Secret(getenv("OAUTH2_DPOP_NONCE_SECRET"))
+	switch cfg.DPoPNonce {
+	case "":
+		cfg.DPoPNonce = DPoPNonceOff
+	case DPoPNonceOff, DPoPNonceToken, DPoPNonceAll:
+	default:
+		fail("OAUTH2_DPOP_NONCE must be off, token or all (got %q)", string(cfg.DPoPNonce))
+		cfg.DPoPNonce = DPoPNonceOff
+	}
+	switch n := len(cfg.DPoPNonceSecret); {
+	case cfg.DPoPNonce == DPoPNonceOff:
+		if n > 0 {
+			fail("OAUTH2_DPOP_NONCE_SECRET is set but OAUTH2_DPOP_NONCE is off; refusing to ignore it silently")
+		}
+	case n == 0:
+		fail("OAUTH2_DPOP_NONCE_SECRET is required when OAUTH2_DPOP_NONCE is %s", string(cfg.DPoPNonce))
+	case n < minDPoPNonceSecretLen:
+		fail("OAUTH2_DPOP_NONCE_SECRET must be at least %d bytes (got %d)", minDPoPNonceSecretLen, n)
+	case cfg.DPoPNonceSecret == cfg.SessionSecret:
+		fail("OAUTH2_DPOP_NONCE_SECRET must differ from OAUTH2_SESSION_SECRET")
 	}
 
 	// Secure-by-default switches.
