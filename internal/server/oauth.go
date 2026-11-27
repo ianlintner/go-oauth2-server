@@ -171,18 +171,22 @@ func (h *oauthHandlers) authorizePushed(w http.ResponseWriter, r *http.Request, 
 }
 
 // currentUser resolves the session cookie to a user. A missing, forged,
-// expired or stale (user deleted) session is simply "not logged in".
+// expired, revoked, stale (user deleted) or credential-superseded (password
+// changed since login) session is simply "not logged in".
 func (h *oauthHandlers) currentUser(r *http.Request) (u oauth.User, ok bool, err error) {
-	name, ok := h.sessions.Username(r)
+	info, ok := h.sessions.Lookup(r)
 	if !ok {
 		return oauth.User{}, false, nil
 	}
-	u, err = h.svc.UserByUsername(r.Context(), name)
+	u, err = h.svc.UserByUsername(r.Context(), info.Username)
 	switch {
 	case errors.Is(err, authcode.ErrInvalidCredentials):
 		return oauth.User{}, false, nil
 	case err != nil:
 		return oauth.User{}, false, err
+	}
+	if !h.sessions.CredentialCurrent(info, u.PasswordHash) {
+		return oauth.User{}, false, nil
 	}
 	return u, true, nil
 }
