@@ -116,6 +116,40 @@ func (r *userRepo) GetByUsername(ctx context.Context, username string) (oauth.Us
 	return u, nil
 }
 
+// --- sessions ---
+
+type sessionRepo struct{ db execer }
+
+func (r *sessionRepo) Create(ctx context.Context, s oauth.Session) error {
+	_, err := r.db.ExecContext(ctx,
+		`INSERT INTO sessions (id, username, expires_at) VALUES (?, ?, ?)`,
+		s.ID, s.Username, nanos(s.ExpiresAt))
+	return createErr(err)
+}
+
+func (r *sessionRepo) Active(ctx context.Context, id, username string, now time.Time) (bool, error) {
+	var one int
+	err := r.db.QueryRowContext(ctx,
+		`SELECT 1 FROM sessions WHERE id = ? AND username = ? AND revoked_at IS NULL AND expires_at > ?`,
+		id, username, nanos(now)).Scan(&one)
+	if errors.Is(err, sql.ErrNoRows) {
+		return false, nil
+	}
+	return err == nil, err
+}
+
+func (r *sessionRepo) Revoke(ctx context.Context, id string, now time.Time) error {
+	_, err := r.db.ExecContext(ctx,
+		`UPDATE sessions SET revoked_at = ? WHERE id = ? AND revoked_at IS NULL`, nanos(now), id)
+	return err
+}
+
+func (r *sessionRepo) RevokeAllForUser(ctx context.Context, username string, now time.Time) error {
+	_, err := r.db.ExecContext(ctx,
+		`UPDATE sessions SET revoked_at = ? WHERE username = ? AND revoked_at IS NULL`, nanos(now), username)
+	return err
+}
+
 // --- authorization codes ---
 
 type authCodeRepo struct{ db execer }
@@ -181,9 +215,9 @@ type refreshRepo struct{ db execer }
 
 func (r *refreshRepo) Create(ctx context.Context, t oauth.RefreshToken) error {
 	_, err := r.db.ExecContext(ctx,
-		`INSERT INTO refresh_tokens (token_hash, family_id, client_id, user_id, scope, audience, expires_at)
-		 VALUES (?, ?, ?, ?, ?, ?, ?)`,
-		t.TokenHash, t.FamilyID, t.ClientID, t.UserID, t.Scope, t.Audience, nanos(t.ExpiresAt))
+		`INSERT INTO refresh_tokens (token_hash, family_id, client_id, user_id, scope, audience, dpop_jkt, expires_at)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+		t.TokenHash, t.FamilyID, t.ClientID, t.UserID, t.Scope, t.Audience, t.DPoPJKT, nanos(t.ExpiresAt))
 	return createErr(err)
 }
 
@@ -197,9 +231,9 @@ func (r *refreshRepo) GetByHash(ctx context.Context, tokenHash string) (oauth.Re
 		expires int64
 	)
 	err := r.db.QueryRowContext(ctx,
-		`SELECT token_hash, family_id, client_id, user_id, scope, audience, expires_at
+		`SELECT token_hash, family_id, client_id, user_id, scope, audience, dpop_jkt, expires_at
 		 FROM refresh_tokens WHERE token_hash = ?`, tokenHash).
-		Scan(&t.TokenHash, &t.FamilyID, &t.ClientID, &t.UserID, &t.Scope, &t.Audience, &expires)
+		Scan(&t.TokenHash, &t.FamilyID, &t.ClientID, &t.UserID, &t.Scope, &t.Audience, &t.DPoPJKT, &expires)
 	if errors.Is(err, sql.ErrNoRows) {
 		return oauth.RefreshToken{}, oauth.ErrNotFound
 	}
@@ -276,9 +310,9 @@ func (r *refreshRepo) Rotate(ctx context.Context, tokenHash string, now time.Tim
 			`UPDATE refresh_tokens SET rotated_at = ?
 			 WHERE token_hash = ? AND rotated_at IS NULL
 			   AND NOT EXISTS (SELECT 1 FROM refresh_families f WHERE f.family_id = refresh_tokens.family_id)
-			 RETURNING token_hash, family_id, client_id, user_id, scope, audience, expires_at`,
+			 RETURNING token_hash, family_id, client_id, user_id, scope, audience, dpop_jkt, expires_at`,
 			nanos(now), tokenHash).
-			Scan(&t.TokenHash, &t.FamilyID, &t.ClientID, &t.UserID, &t.Scope, &t.Audience, &expires)
+			Scan(&t.TokenHash, &t.FamilyID, &t.ClientID, &t.UserID, &t.Scope, &t.Audience, &t.DPoPJKT, &expires)
 		if errors.Is(err, sql.ErrNoRows) {
 			return missOrConsumed(ctx, db, `SELECT 1 FROM refresh_tokens WHERE token_hash = ?`, tokenHash)
 		}

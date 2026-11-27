@@ -26,6 +26,8 @@ type oauthHandlers struct {
 	sessions            *session.Manager
 	tokens              *token.Service
 	dpop                *dpop.Verifier
+	nonces              *dpop.NonceSource // nil: nonces off
+	nonceResources      bool
 	issuer              string
 	loginEnabled        bool
 	registrationScopes  []string
@@ -38,7 +40,11 @@ func newOAuthHandlers(d Deps) *oauthHandlers {
 	if lg == nil {
 		lg = slog.Default()
 	}
-	return &oauthHandlers{svc: d.Service, sessions: d.Sessions, tokens: d.Tokens, dpop: d.DPoP, issuer: d.Issuer, loginEnabled: d.Conformance, registrationScopes: d.RegistrationScopes, registrationEnabled: d.RegistrationEnabled, log: lg}
+	h := &oauthHandlers{svc: d.Service, sessions: d.Sessions, tokens: d.Tokens, dpop: d.DPoP, issuer: d.Issuer, loginEnabled: d.Conformance, registrationScopes: d.RegistrationScopes, registrationEnabled: d.RegistrationEnabled, log: lg}
+	if d.DPoP != nil {
+		h.nonces, h.nonceResources = d.DPoPNonces, d.DPoPNonces != nil && d.DPoPNonceResources
+	}
+	return h
 }
 
 // fail logs the internal cause of a server_error and writes the typed error.
@@ -114,6 +120,16 @@ func (h *oauthHandlers) authorize(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	if err := h.svc.CheckUserScope(user, req.Scope); err != nil {
+		h.redirectError(w, r, redirectURI, req.State, err)
+		return
+	}
+	// No code exists until the resource owner has approved this client for
+	// this scope (a stored approval, or the approval page).
+	if h.requireApproval(w, r, user, req.Client.ID, req.Scope, canonicalQuery(p), redirectURI, req.State) {
+		return
+	}
+
 	code, err := h.svc.IssueCode(r.Context(), req, user.ID)
 	if err != nil {
 		h.redirectError(w, r, redirectURI, req.State, err)
@@ -151,6 +167,20 @@ func (h *oauthHandlers) authorizePushed(w http.ResponseWriter, r *http.Request, 
 		w.WriteHeader(http.StatusFound)
 		return
 	}
+	// Approval is decided before the request is spent, so the approval detour
+	// does not burn it either.
+	pre, err := h.svc.PreviewPushed(r.Context(), clientID, requestURI)
+	if err != nil {
+		h.fail(w, r, err)
+		return
+	}
+	if err := h.svc.CheckUserScope(user, pre.Scope); err != nil {
+		h.fail(w, r, err)
+		return
+	}
+	if h.requireApproval(w, r, user, pre.Client.ID, pre.Scope, url.Values{"client_id": {clientID}, "request_uri": {requestURI}}.Encode(), "", "") {
+		return
+	}
 	req, err := h.svc.RedeemPushed(r.Context(), clientID, requestURI)
 	if err != nil {
 		h.fail(w, r, err)
@@ -165,18 +195,22 @@ func (h *oauthHandlers) authorizePushed(w http.ResponseWriter, r *http.Request, 
 }
 
 // currentUser resolves the session cookie to a user. A missing, forged,
-// expired or stale (user deleted) session is simply "not logged in".
+// expired, revoked, stale (user deleted) or credential-superseded (password
+// changed since login) session is simply "not logged in".
 func (h *oauthHandlers) currentUser(r *http.Request) (u oauth.User, ok bool, err error) {
-	name, ok := h.sessions.Username(r)
+	info, ok := h.sessions.Lookup(r)
 	if !ok {
 		return oauth.User{}, false, nil
 	}
-	u, err = h.svc.UserByUsername(r.Context(), name)
+	u, err = h.svc.UserByUsername(r.Context(), info.Username)
 	switch {
 	case errors.Is(err, authcode.ErrInvalidCredentials):
 		return oauth.User{}, false, nil
 	case err != nil:
 		return oauth.User{}, false, err
+	}
+	if !h.sessions.CredentialCurrent(info, u.PasswordHash) {
+		return oauth.User{}, false, nil
 	}
 	return u, true, nil
 }
@@ -249,6 +283,9 @@ func (h *oauthHandlers) token(w http.ResponseWriter, r *http.Request) {
 		methodNotAllowed(w, http.MethodPost)
 		return
 	}
+	// Every token response, success or error, hands the client a fresh nonce
+	// for its next proof (RFC 9449 §8.2).
+	h.setNonce(w)
 	if r.URL.RawQuery != "" {
 		h.fail(w, r, oauth.InvalidRequest("token request parameters must be in the request body"))
 		return

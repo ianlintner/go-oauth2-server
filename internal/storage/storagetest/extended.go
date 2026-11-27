@@ -39,10 +39,29 @@ func testDeviceCodes(t *testing.T, f Factory) {
 		}
 	})
 
+	t.Run("read by user code hash is read-only", func(t *testing.T) {
+		s := newStore(t, f)
+		mustNoErr(t, s.DeviceCodes().Create(ctx, sampleDevice("d1", "u1")), "create")
+		got, err := s.DeviceCodes().GetByUserCodeHash(ctx, "u1")
+		mustNoErr(t, err, "get by user code")
+		if got.DeviceCodeHash != "d1" || got.Status != oauth.DevicePending {
+			t.Fatalf("mismatch: %+v", got)
+		}
+		again, err := s.DeviceCodes().GetByUserCodeHash(ctx, "u1")
+		mustNoErr(t, err, "get again")
+		if again.Status != oauth.DevicePending {
+			t.Fatalf("lookup changed state: %+v", again)
+		}
+		_, err = s.DeviceCodes().GetByUserCodeHash(ctx, "d1")
+		wantErr(t, err, oauth.ErrNotFound, "device hash is not a user code hash")
+	})
+
 	t.Run("unknown hash is not found", func(t *testing.T) {
 		s := newStore(t, f)
 		_, err := s.DeviceCodes().GetByHash(ctx, "nope")
 		wantErr(t, err, oauth.ErrNotFound, "get")
+		_, err = s.DeviceCodes().GetByUserCodeHash(ctx, "nope")
+		wantErr(t, err, oauth.ErrNotFound, "get by user code")
 		_, err = s.DeviceCodes().Decide(ctx, "nope", oauth.DeviceApproved, "user-1")
 		wantErr(t, err, oauth.ErrNotFound, "decide")
 		_, err = s.DeviceCodes().Consume(ctx, "nope", ref)
@@ -189,6 +208,47 @@ func testPushedRequests(t *testing.T, f Factory) {
 		wg.Wait()
 		if wins.Load() != 1 {
 			t.Fatalf("%d winners, want exactly 1", wins.Load())
+		}
+	})
+}
+
+func testApprovals(t *testing.T, f Factory) {
+	ctx := context.Background()
+
+	t.Run("unknown pair is not found", func(t *testing.T) {
+		s := newStore(t, f)
+		_, err := s.Approvals().Get(ctx, "user-1", "client-a")
+		wantErr(t, err, oauth.ErrNotFound, "get missing")
+	})
+
+	t.Run("put and read back round-trips", func(t *testing.T) {
+		s := newStore(t, f)
+		want := oauth.Approval{UserID: "user-1", ClientID: "client-a", Scopes: []string{"openid", "read"}, GrantedAt: ref}
+		mustNoErr(t, s.Approvals().Put(ctx, want), "put")
+		got, err := s.Approvals().Get(ctx, "user-1", "client-a")
+		mustNoErr(t, err, "get")
+		if got.UserID != want.UserID || got.ClientID != want.ClientID || !equalStrings(got.Scopes, want.Scopes) || !got.GrantedAt.Equal(ref) {
+			t.Fatalf("approval mismatch\n got: %+v\nwant: %+v", got, want)
+		}
+	})
+
+	t.Run("approvals are per user and per client", func(t *testing.T) {
+		s := newStore(t, f)
+		mustNoErr(t, s.Approvals().Put(ctx, oauth.Approval{UserID: "user-1", ClientID: "client-a", Scopes: []string{"read"}, GrantedAt: ref}), "put")
+		_, err := s.Approvals().Get(ctx, "user-2", "client-a")
+		wantErr(t, err, oauth.ErrNotFound, "other user")
+		_, err = s.Approvals().Get(ctx, "user-1", "client-b")
+		wantErr(t, err, oauth.ErrNotFound, "other client")
+	})
+
+	t.Run("put replaces the earlier row", func(t *testing.T) {
+		s := newStore(t, f)
+		mustNoErr(t, s.Approvals().Put(ctx, oauth.Approval{UserID: "user-1", ClientID: "client-a", Scopes: []string{"read", "write"}, GrantedAt: ref}), "put")
+		mustNoErr(t, s.Approvals().Put(ctx, oauth.Approval{UserID: "user-1", ClientID: "client-a", Scopes: []string{"read"}, GrantedAt: ref}), "replace")
+		got, err := s.Approvals().Get(ctx, "user-1", "client-a")
+		mustNoErr(t, err, "get")
+		if !equalStrings(got.Scopes, []string{"read"}) {
+			t.Fatalf("scopes = %v, want [read]", got.Scopes)
 		}
 	})
 }
