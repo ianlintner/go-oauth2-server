@@ -98,7 +98,7 @@ func newTokenEnvDeps(t *testing.T, replay func(oauth.Clock) dpop.ReplayStore, tw
 	if err != nil {
 		t.Fatal(err)
 	}
-	sess, err := session.New([]byte("0123456789abcdef0123456789abcdef"), clk, true)
+	sess, err := session.New([]byte("0123456789abcdef0123456789abcdef"), clk, true, st.Sessions())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -336,6 +336,7 @@ func TestTokenEndpointIssuesSignedAccessToken(t *testing.T) {
 	}()}); err != nil {
 		t.Fatal(err)
 	}
+	approveClient(t, e.store, "user-1", "client-a")
 	c := e.login(t)
 	rec := e.get("/oauth/authorize?"+authQuery("client-a", callback, nil), cookie(c))
 	if rec.Code != http.StatusFound {

@@ -48,6 +48,11 @@ func addRefreshClients(t *testing.T, e *tokenEnv) {
 	if err := e.store.Users().Create(ctx, oauth.User{ID: "user-1", Username: "alice", PasswordHash: pw}); err != nil {
 		t.Fatal(err)
 	}
+	// Main's consent gate requires an explicit approval before an authorize
+	// request issues a code; these clients model a previously consented user.
+	for _, id := range []string{pubDPoPClient, confRTClient} {
+		approveClient(t, e.store, "user-1", id)
+	}
 }
 
 // tokenWithProof posts a token request carrying a fresh proof from k (none

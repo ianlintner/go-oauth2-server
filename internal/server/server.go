@@ -108,6 +108,9 @@ func New(d Deps) http.Handler {
 			mux.HandleFunc("/oauth/device/verify", h.deviceVerify)
 			mux.HandleFunc("GET /auth/login", h.loginForm)
 			mux.HandleFunc("POST /auth/login", h.loginSubmit)
+			mux.HandleFunc("GET /auth/consent", h.consentForm)
+			mux.HandleFunc("POST /auth/consent", h.consentSubmit)
+			mux.HandleFunc("POST /auth/logout", h.logout)
 		}
 	}
 	handler := hardenHeaders(mux)

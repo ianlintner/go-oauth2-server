@@ -94,7 +94,10 @@ func (h *oauthHandlers) loginSubmit(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	h.sessions.Issue(w, user.Username)
+	if err := h.sessions.Issue(r.Context(), w, user.Username, user.PasswordHash); err != nil {
+		h.fail(w, r, oauth.ServerError(err))
+		return
+	}
 	if rq != "" {
 		w.Header().Set("Location", "/oauth/authorize?"+rq)
 		w.WriteHeader(http.StatusFound)
@@ -102,6 +105,23 @@ func (h *oauthHandlers) loginSubmit(w http.ResponseWriter, r *http.Request) {
 	}
 	w.Header().Set("Content-Type", "text/plain; charset=utf-8")
 	_, _ = io.WriteString(w, "Signed in.\n")
+}
+
+// logout ends the caller's session: the server-side record is revoked, so the
+// cookie value stops working even if a copy exists elsewhere, and the cookie is
+// cleared in the browser. It is idempotent.
+func (h *oauthHandlers) logout(w http.ResponseWriter, r *http.Request) {
+	noStore(w)
+	if site := r.Header.Get("Sec-Fetch-Site"); site != "" && site != "same-origin" && site != "none" {
+		http.Error(w, "cross-site logout is not allowed", http.StatusForbidden)
+		return
+	}
+	if err := h.sessions.End(w, r); err != nil {
+		h.fail(w, r, oauth.ServerError(err))
+		return
+	}
+	w.Header().Set("Content-Type", "text/plain; charset=utf-8")
+	_, _ = io.WriteString(w, "Signed out.\n")
 }
 
 // sanitizeReturnQuery returns the canonical form of a carried authorization

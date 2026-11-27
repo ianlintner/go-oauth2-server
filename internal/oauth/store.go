@@ -3,6 +3,7 @@ package oauth
 import (
 	"context"
 	"errors"
+	"strings"
 	"time"
 )
 
@@ -139,6 +140,31 @@ type PushedRequest struct {
 	ExpiresAt time.Time
 }
 
+// Approval records that a resource owner approved a client for a set of
+// scopes. There is at most one row per (UserID, ClientID); a seeded or
+// user-granted approval is always an explicit row.
+type Approval struct {
+	UserID    string
+	ClientID  string
+	Scopes    []string
+	GrantedAt time.Time
+}
+
+// Covers reports whether every space-delimited scope in requested is part of
+// the approved set. An empty request is covered by any approval.
+func (a Approval) Covers(requested string) bool {
+	have := make(map[string]bool, len(a.Scopes))
+	for _, s := range a.Scopes {
+		have[s] = true
+	}
+	for _, s := range strings.Fields(requested) {
+		if !have[s] {
+			return false
+		}
+	}
+	return true
+}
+
 // ClientRepository stores registered clients.
 type ClientRepository interface {
 	// Create returns ErrConflict if the client ID exists.
@@ -153,6 +179,28 @@ type UserRepository interface {
 	Create(ctx context.Context, u User) error
 	// GetByUsername returns ErrNotFound if absent.
 	GetByUsername(ctx context.Context, username string) (User, error)
+}
+
+// Session is a server-side record of one resource-owner login. ID is an opaque
+// identifier (the session package stores a hash of the value in the cookie).
+type Session struct {
+	ID        string
+	Username  string
+	ExpiresAt time.Time
+}
+
+// SessionRepository stores resource-owner login sessions so the server, not
+// the browser, decides whether a session is still live.
+type SessionRepository interface {
+	// Create returns ErrConflict if the ID exists.
+	Create(ctx context.Context, s Session) error
+	// Active reports whether a session with this ID exists for username, has
+	// not expired at now and has not been revoked.
+	Active(ctx context.Context, id, username string, now time.Time) (bool, error)
+	// Revoke ends one session. It is idempotent and ignores unknown IDs.
+	Revoke(ctx context.Context, id string, now time.Time) error
+	// RevokeAllForUser ends every live session of username.
+	RevokeAllForUser(ctx context.Context, username string, now time.Time) error
 }
 
 // AuthCodeRepository stores one-time authorization codes.
@@ -196,6 +244,15 @@ type AccessTokenRepository interface {
 	// Revoke marks the token revoked and reports whether it was newly
 	// revoked. Revoking an unknown or already-revoked token is not an error.
 	Revoke(ctx context.Context, jti string, now time.Time) (bool, error)
+}
+
+// ApprovalRepository stores resource-owner approvals of clients.
+type ApprovalRepository interface {
+	// Get returns ErrNotFound when the user has not approved the client.
+	Get(ctx context.Context, userID, clientID string) (Approval, error)
+	// Put records the approval, replacing any earlier row for the same
+	// (user, client) pair.
+	Put(ctx context.Context, a Approval) error
 }
 
 // DeviceCodeRepository stores RFC 8628 device authorizations.
@@ -247,6 +304,8 @@ type Repositories interface {
 	AccessTokens() AccessTokenRepository
 	DeviceCodes() DeviceCodeRepository
 	PushedRequests() PushedRequestRepository
+	Approvals() ApprovalRepository
+	Sessions() SessionRepository
 }
 
 // Store is the storage port every adapter (SQLite now, PostgreSQL later)
