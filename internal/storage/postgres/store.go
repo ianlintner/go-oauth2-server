@@ -96,12 +96,14 @@ type repos struct {
 	access  *accessTokenRepo
 	device  *deviceRepo
 	pushed  *pushedRepo
+	session *sessionRepo
 }
 
 func newRepos(db execer) repos {
 	return repos{
 		clients: &clientRepo{db}, users: &userRepo{db}, codes: &authCodeRepo{db},
 		refresh: &refreshRepo{db}, access: &accessTokenRepo{db}, device: &deviceRepo{db}, pushed: &pushedRepo{db},
+		session: &sessionRepo{db},
 	}
 }
 func (r repos) Clients() oauth.ClientRepository               { return r.clients }
@@ -111,6 +113,7 @@ func (r repos) RefreshTokens() oauth.RefreshTokenRepository   { return r.refresh
 func (r repos) AccessTokens() oauth.AccessTokenRepository     { return r.access }
 func (r repos) DeviceCodes() oauth.DeviceCodeRepository       { return r.device }
 func (r repos) PushedRequests() oauth.PushedRequestRepository { return r.pushed }
+func (r repos) Sessions() oauth.SessionRepository             { return r.session }
 
 // txBeginner is implemented by the pool-bound execer, so a repository that is
 // not already inside a transaction can open one for a multi-statement operation.
