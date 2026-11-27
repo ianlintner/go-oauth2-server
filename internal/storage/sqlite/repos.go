@@ -298,12 +298,29 @@ func (r *refreshRepo) RevokeFamily(ctx context.Context, familyID string, now tim
 
 type accessTokenRepo struct{ db execer }
 
+// Create inserts the token. A revocation tombstone left by Revoke for the same
+// jti (a replay that was detected before this token was persisted) is
+// completed in place and stays revoked, so a token issued after its grant was
+// revoked is never live. Any other existing jti is ErrConflict.
 func (r *accessTokenRepo) Create(ctx context.Context, t oauth.AccessToken) error {
-	_, err := r.db.ExecContext(ctx,
+	res, err := r.db.ExecContext(ctx,
 		`INSERT INTO access_tokens (jti, client_id, user_id, scope, issued_at, expires_at)
-		 VALUES (?, ?, ?, ?, ?, ?)`,
+		 VALUES (?, ?, ?, ?, ?, ?)
+		 ON CONFLICT (jti) DO UPDATE SET client_id = excluded.client_id, user_id = excluded.user_id,
+		   scope = excluded.scope, issued_at = excluded.issued_at, expires_at = excluded.expires_at
+		 WHERE access_tokens.client_id = '' AND access_tokens.revoked_at IS NOT NULL`,
 		t.JTI, t.ClientID, t.UserID, t.Scope, nanos(t.IssuedAt), nanos(t.ExpiresAt))
-	return createErr(err)
+	if err != nil {
+		return createErr(err)
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return err
+	}
+	if n == 0 {
+		return oauth.ErrConflict
+	}
+	return nil
 }
 
 func (r *accessTokenRepo) GetByJTI(ctx context.Context, jti string) (oauth.AccessToken, error) {
@@ -332,15 +349,43 @@ func (r *accessTokenRepo) GetByJTI(ctx context.Context, jti string) (oauth.Acces
 
 // Revoke sets revoked_at eagerly and reports whether the token was active. It
 // is idempotent: revoking an unknown or already-revoked token is not an error.
+// Revoking a jti that has no row yet records a revocation tombstone (empty
+// client_id) that a later Create completes while keeping it revoked, so
+// revoking a grant cannot lose a race against the issuance of its token. The
+// update/insert/update sequence closes the window where Create lands between
+// the first update and the tombstone insert.
 func (r *accessTokenRepo) Revoke(ctx context.Context, jti string, now time.Time) (bool, error) {
-	res, err := r.db.ExecContext(ctx,
-		`UPDATE access_tokens SET revoked_at = ? WHERE jti = ? AND revoked_at IS NULL`,
-		nanos(now), jti)
+	const upd = `UPDATE access_tokens SET revoked_at = ? WHERE jti = ? AND revoked_at IS NULL`
+	res, err := r.db.ExecContext(ctx, upd, nanos(now), jti)
 	if err != nil {
 		return false, err
 	}
 	n, err := res.RowsAffected()
 	if err != nil {
+		return false, err
+	}
+	if n > 0 {
+		return true, nil
+	}
+	res, err = r.db.ExecContext(ctx,
+		`INSERT OR IGNORE INTO access_tokens (jti, client_id, user_id, scope, issued_at, expires_at, revoked_at)
+		 VALUES (?, '', '', '', ?, ?, ?)`,
+		jti, nanos(now), nanos(now), nanos(now))
+	if err != nil {
+		return false, err
+	}
+	if n, err = res.RowsAffected(); err != nil {
+		return false, err
+	}
+	if n > 0 {
+		return false, nil // tombstone recorded; nothing was active
+	}
+	// A row appeared concurrently: revoke it.
+	res, err = r.db.ExecContext(ctx, upd, nanos(now), jti)
+	if err != nil {
+		return false, err
+	}
+	if n, err = res.RowsAffected(); err != nil {
 		return false, err
 	}
 	return n > 0, nil

@@ -645,6 +645,25 @@ func testAccessTokens(t *testing.T, f Factory) {
 		}
 	})
 
+	t.Run("revoke before create leaves the token revoked", func(t *testing.T) {
+		s := newStore(t, f)
+		revoked, err := s.AccessTokens().Revoke(ctx, "late", ref)
+		mustNoErr(t, err, "revoke before issuance")
+		if revoked {
+			t.Fatal("revoking a not-yet-issued jti reported a change")
+		}
+		mustNoErr(t, s.AccessTokens().Create(ctx, sampleAccessToken("late")), "create after revoke")
+		got, err := s.AccessTokens().GetByJTI(ctx, "late")
+		mustNoErr(t, err, "get")
+		if got.RevokedAt.IsZero() || !got.RevokedAt.Equal(ref) {
+			t.Fatalf("token created after its revocation is live: RevokedAt = %v", got.RevokedAt)
+		}
+		if got.ClientID != "client-a" || got.UserID != "user-1" || got.Scope != "openid profile" {
+			t.Fatalf("tombstone not completed with the token's fields: %+v", got)
+		}
+		wantErr(t, s.AccessTokens().Create(ctx, sampleAccessToken("late")), oauth.ErrConflict, "second create")
+	})
+
 	t.Run("revoking an unknown jti is not an error", func(t *testing.T) {
 		s := newStore(t, f)
 		revoked, err := s.AccessTokens().Revoke(ctx, "ghost", ref)

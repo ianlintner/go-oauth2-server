@@ -35,13 +35,30 @@ func newTokenEnv(t *testing.T) *tokenEnv {
 
 // newTokenEnvWithReplay is newTokenEnv with a caller-chosen DPoP replay store.
 func newTokenEnvWithReplay(t *testing.T, replay func(oauth.Clock) dpop.ReplayStore) *tokenEnv {
+	return newTokenEnvFull(t, nil, replay)
+}
+
+// newTokenEnvWrapped is newTokenEnv with the store the services see optionally
+// wrapped (to inject a hook at a precise point); the env's own store stays
+// the raw one.
+func newTokenEnvWrapped(t *testing.T, wrap func(oauth.Store) oauth.Store) *tokenEnv {
+	return newTokenEnvFull(t, wrap, func(clk oauth.Clock) dpop.ReplayStore { return dpop.NewMemoryReplayStore(clk, 1000) })
+}
+
+func newTokenEnvFull(t *testing.T, wrap func(oauth.Store) oauth.Store, replay func(oauth.Clock) dpop.ReplayStore) *tokenEnv {
 	t.Helper()
-	return newTokenEnvDeps(t, replay, nil)
+	return newTokenEnvDepsWithWrap(t, wrap, replay, nil)
 }
 
 // newTokenEnvDeps is newTokenEnvWithReplay with a hook to adjust the router's
 // Deps; the hook receives the env clock so it can build clock-driven parts.
 func newTokenEnvDeps(t *testing.T, replay func(oauth.Clock) dpop.ReplayStore, tweak func(oauth.Clock, *server.Deps)) *tokenEnv {
+	return newTokenEnvDepsWithWrap(t, nil, replay, tweak)
+}
+
+// newTokenEnvDepsWithWrap is the shared builder: wrap optionally replaces the
+// store the token/authcode services see, and tweak adjusts the router Deps.
+func newTokenEnvDepsWithWrap(t *testing.T, wrap func(oauth.Store) oauth.Store, replay func(oauth.Clock) dpop.ReplayStore, tweak func(oauth.Clock, *server.Deps)) *tokenEnv {
 	t.Helper()
 	st, err := sqlite.Open(sqlite.MemoryDSN)
 	if err != nil {
@@ -61,6 +78,7 @@ func newTokenEnvDeps(t *testing.T, replay func(oauth.Clock) dpop.ReplayStore, tw
 		{ID: "client-a", SecretHash: hash("test-only-secret"), AuthMethod: "client_secret_basic", RedirectURIs: []string{callback}, GrantTypes: []string{"authorization_code"}},
 		{ID: "client-b", SecretHash: hash("other-test-secret"), AuthMethod: "client_secret_basic", RedirectURIs: []string{callback}, GrantTypes: []string{"authorization_code"}},
 		{ID: "client-public", Public: true, AuthMethod: "none", RedirectURIs: []string{callback}, GrantTypes: []string{"authorization_code"}},
+		{ID: "client-rt", SecretHash: hash("rt-test-secret"), AuthMethod: "client_secret_basic", RedirectURIs: []string{callback}, GrantTypes: []string{"authorization_code", "refresh_token"}},
 		{ID: "client-cc", SecretHash: hash("test-only-secret"), AuthMethod: "client_secret_basic", GrantTypes: []string{"client_credentials"}},
 		{ID: "client-public-cc", Public: true, AuthMethod: "none", GrantTypes: []string{"client_credentials"}},
 	}
@@ -70,6 +88,10 @@ func newTokenEnvDeps(t *testing.T, replay func(oauth.Clock) dpop.ReplayStore, tw
 		}
 	}
 	clk := &hClock{t: time.Unix(1_700_000_000, 0).UTC()}
+	var svcStore oauth.Store = st
+	if wrap != nil {
+		svcStore = wrap(st)
+	}
 
 	key, err := rsa.GenerateKey(rand.Reader, 2048)
 	if err != nil {
@@ -86,7 +108,7 @@ func newTokenEnvDeps(t *testing.T, replay func(oauth.Clock) dpop.ReplayStore, tw
 		Signer:   signer,
 		Verifier: verifier,
 		Keys:     ks,
-		Store:    st,
+		Store:    svcStore,
 		Clock:    clk,
 		Random:   rnd,
 	})
@@ -94,7 +116,7 @@ func newTokenEnvDeps(t *testing.T, replay func(oauth.Clock) dpop.ReplayStore, tw
 		t.Fatal(err)
 	}
 
-	svc, err := authcode.New(authcode.Config{Store: st, Clock: clk, Random: rnd, Tokens: tokens})
+	svc, err := authcode.New(authcode.Config{Store: svcStore, Clock: clk, Random: rnd, Tokens: tokens})
 	if err != nil {
 		t.Fatal(err)
 	}
