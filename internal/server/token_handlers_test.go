@@ -30,6 +30,18 @@ type tokenEnv struct {
 }
 
 func newTokenEnv(t *testing.T) *tokenEnv {
+	return newTokenEnvWithReplay(t, func(clk oauth.Clock) dpop.ReplayStore { return dpop.NewMemoryReplayStore(clk, 1000) })
+}
+
+// newTokenEnvWithReplay is newTokenEnv with a caller-chosen DPoP replay store.
+func newTokenEnvWithReplay(t *testing.T, replay func(oauth.Clock) dpop.ReplayStore) *tokenEnv {
+	t.Helper()
+	return newTokenEnvDeps(t, replay, nil)
+}
+
+// newTokenEnvDeps is newTokenEnvWithReplay with a hook to adjust the router's
+// Deps; the hook receives the env clock so it can build clock-driven parts.
+func newTokenEnvDeps(t *testing.T, replay func(oauth.Clock) dpop.ReplayStore, tweak func(oauth.Clock, *server.Deps)) *tokenEnv {
 	t.Helper()
 	st, err := sqlite.Open(sqlite.MemoryDSN)
 	if err != nil {
@@ -86,12 +98,16 @@ func newTokenEnv(t *testing.T) *tokenEnv {
 	if err != nil {
 		t.Fatal(err)
 	}
-	sess, err := session.New([]byte("0123456789abcdef0123456789abcdef"), clk, true)
+	sess, err := session.New([]byte("0123456789abcdef0123456789abcdef"), clk, true, st.Sessions())
 	if err != nil {
 		t.Fatal(err)
 	}
-	proofs := dpop.NewVerifier(dpop.Config{Clock: clk, Replay: dpop.NewMemoryReplayStore(clk, 1000)})
-	h := server.New(server.Deps{Service: svc, Sessions: sess, Issuer: issuer, Conformance: true, Tokens: tokens, DPoP: proofs})
+	proofs := dpop.NewVerifier(dpop.Config{Clock: clk, Replay: replay(clk)})
+	deps := server.Deps{Service: svc, Sessions: sess, Issuer: issuer, Conformance: true, Tokens: tokens, DPoP: proofs}
+	if tweak != nil {
+		tweak(clk, &deps)
+	}
+	h := server.New(deps)
 	env := &handlerEnv{h: h, store: st, clock: clk}
 	return &tokenEnv{handlerEnv: env, tokens: tokens}
 }
@@ -320,6 +336,7 @@ func TestTokenEndpointIssuesSignedAccessToken(t *testing.T) {
 	}()}); err != nil {
 		t.Fatal(err)
 	}
+	approveClient(t, e.store, "user-1", "client-a")
 	c := e.login(t)
 	rec := e.get("/oauth/authorize?"+authQuery("client-a", callback, nil), cookie(c))
 	if rec.Code != http.StatusFound {

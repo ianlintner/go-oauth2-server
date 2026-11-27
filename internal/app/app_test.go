@@ -228,6 +228,13 @@ func TestStartupFailsClosed(t *testing.T) {
 		{"seed issuer differs from configured issuer", func(t *testing.T, e map[string]string) {
 			writeSeed(t, e, strings.Replace(seedBody, "http://localhost:8080", "http://elsewhere.example", 1))
 		}, "issuer"},
+		{"dpop nonce on without a secret", func(_ *testing.T, e map[string]string) { e["OAUTH2_DPOP_NONCE"] = "token" }, "OAUTH2_DPOP_NONCE_SECRET"},
+		{"production dpop nonce on without a secret", func(t *testing.T, e map[string]string) {
+			e["OAUTH2_ENVIRONMENT"] = "production"
+			e["OAUTH2_ISSUER"] = "https://auth.example.com"
+			e["OAUTH2_STORAGE_DSN"] = filepath.Join(t.TempDir(), "p.db")
+			e["OAUTH2_DPOP_NONCE"] = "all"
+		}, "OAUTH2_DPOP_NONCE_SECRET"},
 		{"unusable storage path", func(t *testing.T, e map[string]string) {
 			e["OAUTH2_STORAGE_DSN"] = filepath.Join(t.TempDir(), "no", "such", "dir", "x.db")
 		}, "sqlite"},

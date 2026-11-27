@@ -2,7 +2,7 @@
 # `oauth2-conformance` runner contract
 # (https://github.com/ianlintner/oauth2-conformance).
 #
-# Pinned contract commit: 985fef7aca4835a7ab4fb92c94e8f979f7308189
+# Pinned contract commit: 771d0d6fa8160a8d8730c514c7eaf72017fdc29e
 # (also pinned in conformance-contract.yaml; the manifest schema's `contract`
 # field is a full 40-char SHA before a tag is cut, per ROADMAP.md flow step 2).
 #
@@ -27,7 +27,7 @@
 # deviates from the reference on purpose. The contract runner was not run for
 # this change: whether the deferred scenario now asserts and passes is unverified.
 implementation: go-oauth2-server
-contract: 985fef7aca4835a7ab4fb92c94e8f979f7308189
+contract: 771d0d6fa8160a8d8730c514c7eaf72017fdc29e
 # sender-constrained (v0.5): see docs/sender-constrained.md. Only the 7
 # stable DPoP scenarios of the contract are exercised and pass; the other 28
 # are draft, so this claim does NOT cover nonces, mTLS, ath/key-binding
