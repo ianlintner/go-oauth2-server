@@ -285,7 +285,12 @@ func (s *Service) IssueCode(ctx context.Context, req AuthRequest, userID string)
 		return "", oauth.ServerError(err)
 	}
 	code := base64.RawURLEncoding.EncodeToString(raw)
+	grantID, err := s.newGrantID()
+	if err != nil {
+		return "", err
+	}
 	rec := oauth.AuthorizationCode{
+		GrantID:             grantID,
 		CodeHash:            hashCode(code),
 		ClientID:            req.Client.ID,
 		UserID:              userID,
@@ -301,6 +306,15 @@ func (s *Service) IssueCode(ctx context.Context, req AuthRequest, userID string)
 		return "", oauth.ServerError(err)
 	}
 	return code, nil
+}
+
+// newGrantID returns a fresh random grant id (128 bits, never client-supplied).
+func (s *Service) newGrantID() (string, error) {
+	b, err := s.rnd.Bytes(16)
+	if err != nil {
+		return "", oauth.ServerError(err)
+	}
+	return hex.EncodeToString(b), nil
 }
 
 func hashCode(code string) string {
@@ -379,10 +393,16 @@ func (s *Service) redeemCode(ctx context.Context, client oauth.Client, p oauth.P
 	now := s.clock.Now()
 	rec, err := s.store.AuthCodes().Consume(ctx, hashCode(code), now)
 	switch {
-	case errors.Is(err, oauth.ErrNotFound), errors.Is(err, oauth.ErrAlreadyConsumed):
-		// Replay or fabricated code. (RFC 9700 §2.1.1 asks that tokens issued
-		// from a replayed code be revoked; access tokens are not persisted in
-		// this slice, so there is nothing to revoke yet.)
+	case errors.Is(err, oauth.ErrAlreadyConsumed):
+		// Replay: end the grant the code started, so tokens already issued
+		// from it stop working (RFC 9700 §4.14.2). A failed revocation is
+		// reported as a server error rather than the ordinary invalid_grant.
+		if rerr := s.revokeReplayedCode(ctx, client, code, redirectURI, verifier, now); rerr != nil {
+			return TokenResponse{}, rerr
+		}
+		return TokenResponse{}, oauth.InvalidGrant("authorization code is invalid, expired or already used")
+	case errors.Is(err, oauth.ErrNotFound):
+		// Fabricated code: nothing was issued, so nothing to revoke.
 		return TokenResponse{}, oauth.InvalidGrant("authorization code is invalid, expired or already used")
 	case err != nil:
 		return TokenResponse{}, oauth.ServerError(err)
@@ -408,7 +428,7 @@ func (s *Service) redeemCode(ctx context.Context, client oauth.Client, p oauth.P
 	if err != nil {
 		return TokenResponse{}, err
 	}
-	resp, err := s.issueTokens(ctx, client, rec.UserID, rec.Scope, audience, true, "")
+	resp, err := s.issueTokens(ctx, client, rec.UserID, rec.Scope, audience, true, rec.GrantID, "")
 	if err != nil {
 		return TokenResponse{}, err
 	}
@@ -422,6 +442,34 @@ func (s *Service) redeemCode(ctx context.Context, client oauth.Client, p oauth.P
 		resp.IDToken = idt
 	}
 	return resp, nil
+}
+
+// revokeReplayedCode ends the grant behind an already-consumed code. A code
+// that predates grant linking carries no grant id and has nothing to revoke.
+// Only a request that could itself have redeemed the code (same client,
+// redirect URI and PKCE verifier) ends the grant; any other request just gets
+// the ordinary invalid_grant and leaves the grant untouched.
+func (s *Service) revokeReplayedCode(ctx context.Context, client oauth.Client, code, redirectURI, verifier string, now time.Time) error {
+	rec, err := s.store.AuthCodes().GetByHash(ctx, hashCode(code))
+	switch {
+	case errors.Is(err, oauth.ErrNotFound):
+		return nil
+	case err != nil:
+		return oauth.ServerError(err)
+	}
+	if rec.GrantID == "" {
+		return nil
+	}
+	if rec.ClientID != client.ID || rec.RedirectURI != redirectURI ||
+		rec.CodeChallengeMethod != oauth.MethodS256 || !oauth.VerifyS256(rec.CodeChallenge, verifier) {
+		return nil
+	}
+	// A grant that issued a refresh token uses the grant id as its family id,
+	// so revoking the family and the grant's access tokens ends all of it.
+	if err := oauth.RevokeGrant(ctx, s.store, rec.GrantID, rec.GrantID, now); err != nil {
+		return oauth.ServerError(err)
+	}
+	return nil
 }
 
 func hasScope(scope, want string) bool {
@@ -447,7 +495,7 @@ func (s *Service) clientCredentials(ctx context.Context, client oauth.Client, p 
 	if err != nil {
 		return TokenResponse{}, err
 	}
-	return s.issueTokens(ctx, client, client.ID, scope, audience, false, "")
+	return s.issueTokens(ctx, client, client.ID, scope, audience, false, "", "")
 }
 
 // refreshToken handles grant_type=refresh_token (RFC 6749 §6): authenticates
@@ -518,19 +566,32 @@ func (s *Service) refreshToken(ctx context.Context, client oauth.Client, p oauth
 	// The replacement shares the rotated token's family so a replayed member
 	// revokes the whole lineage, including this new token (RFC 6819 §5.2.2.3 /
 	// RFC 9700 §2.1.5 cascade revocation).
-	return s.issueTokens(ctx, client, rec.UserID, scope, audience, true, rotated.FamilyID)
+	// Tokens minted by a rotation stay in the grant of the rotated token. A
+	// record that predates grant linking falls back to its family id.
+	grantID := rotated.GrantID
+	if grantID == "" {
+		grantID = rotated.FamilyID
+	}
+	return s.issueTokens(ctx, client, rec.UserID, scope, audience, true, grantID, rotated.FamilyID)
 }
 
 // issueTokens mints an access token and, when withRefresh is true, a refresh
-// token. familyID, when non-empty, is the rotation family the minted refresh
-// token joins (empty mints a fresh family). When the Service has a token.Service
+// token. grantID links every minted token to its grant (empty starts a new
+// grant). familyID, when non-empty, is the rotation family the minted refresh
+// token joins; empty mints a fresh family whose id is the grant id. When the Service has a token.Service
 // it uses it for signed RFC 9068 access tokens; otherwise it falls back to the
 // legacy opaque placeholder so the pre-lifecycle contract tests keep passing.
-func (s *Service) issueTokens(ctx context.Context, client oauth.Client, subject, scope, audience string, withRefresh bool, familyID string) (TokenResponse, error) {
+func (s *Service) issueTokens(ctx context.Context, client oauth.Client, subject, scope, audience string, withRefresh bool, grantID, familyID string) (TokenResponse, error) {
 	resp := TokenResponse{TokenType: "Bearer", Scope: scope}
+	if grantID == "" {
+		var err error
+		if grantID, err = s.newGrantID(); err != nil {
+			return TokenResponse{}, err
+		}
+	}
 
 	if s.tokens != nil {
-		at, err := s.tokens.Issue(ctx, token.IssueParams{ClientID: client.ID, Subject: subject, Scope: scope, Audience: []string{audience}, JKT: oauth.DPoPKey(ctx)})
+		at, err := s.tokens.Issue(ctx, token.IssueParams{ClientID: client.ID, Subject: subject, Scope: scope, Audience: []string{audience}, GrantID: grantID, JKT: oauth.DPoPKey(ctx)})
 		if err != nil {
 			return TokenResponse{}, err
 		}
@@ -547,7 +608,7 @@ func (s *Service) issueTokens(ctx context.Context, client oauth.Client, subject,
 	}
 
 	if withRefresh {
-		rt, err := s.mintRefreshToken(ctx, client, subject, scope, audience, familyID)
+		rt, err := s.mintRefreshToken(ctx, client, subject, scope, audience, grantID, familyID)
 		if err != nil {
 			return TokenResponse{}, err
 		}
@@ -559,19 +620,16 @@ func (s *Service) issueTokens(ctx context.Context, client oauth.Client, subject,
 // mintRefreshToken creates an opaque refresh token and persists only its hash.
 // When familyID is non-empty the token joins that existing rotation family
 // (used on rotation so a replay revokes the whole lineage); otherwise a fresh
-// family is minted (a new grant lineage).
-func (s *Service) mintRefreshToken(ctx context.Context, client oauth.Client, userID, scope, audience, familyID string) (string, error) {
+// family is minted whose id is the grant id, so ending the grant (see
+// oauth.RevokeGrant) reaches it by that id.
+func (s *Service) mintRefreshToken(ctx context.Context, client oauth.Client, userID, scope, audience, grantID, familyID string) (string, error) {
 	raw, err := s.rnd.Bytes(tokenBytes)
 	if err != nil {
 		return "", oauth.ServerError(err)
 	}
 	value := base64.RawURLEncoding.EncodeToString(raw)
 	if familyID == "" {
-		fam, err := s.rnd.Bytes(16)
-		if err != nil {
-			return "", oauth.ServerError(err)
-		}
-		familyID = hex.EncodeToString(fam)
+		familyID = grantID
 	}
 	// RFC 9449 §5: bind a public client's refresh token to the proof key of
 	// the request. On rotation the presented key already equals the stored
@@ -583,6 +641,7 @@ func (s *Service) mintRefreshToken(ctx context.Context, client oauth.Client, use
 	rec := oauth.RefreshToken{
 		TokenHash: hashToken(value),
 		FamilyID:  familyID,
+		GrantID:   grantID,
 		ClientID:  client.ID,
 		DPoPJKT:   jkt,
 		UserID:    userID,
@@ -597,18 +656,13 @@ func (s *Service) mintRefreshToken(ctx context.Context, client oauth.Client, use
 }
 
 // rotateRefresh consumes a refresh token, revoking its family on replay. It
-// delegates to token.Service when present so the service owns family-replay
-// revocation; otherwise it uses the store directly and revokes the family
-// itself on replay (mirroring token.Service.RotateRefresh).
+// delegates to token.Service when present so the service owns replay
+// revocation; otherwise it applies the same rule through oauth.RevokeGrant.
 func (s *Service) rotateRefresh(ctx context.Context, hash, familyID string) (oauth.RefreshToken, error) {
 	if s.tokens != nil {
 		return s.tokens.RotateRefresh(ctx, hash, familyID)
 	}
-	t, err := s.store.RefreshTokens().Rotate(ctx, hash, s.clock.Now())
-	if errors.Is(err, oauth.ErrAlreadyConsumed) && familyID != "" {
-		_, _ = s.store.RefreshTokens().RevokeFamily(ctx, familyID, s.clock.Now())
-	}
-	return t, err
+	return token.RotateRefreshToken(ctx, s.store, hash, familyID, s.clock.Now())
 }
 
 func hashToken(code string) string {
