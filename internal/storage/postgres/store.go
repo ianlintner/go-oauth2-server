@@ -96,6 +96,7 @@ type repos struct {
 	access  *accessTokenRepo
 	device  *deviceRepo
 	pushed  *pushedRepo
+	approve *approvalRepo
 	session *sessionRepo
 }
 
@@ -103,6 +104,7 @@ func newRepos(db execer) repos {
 	return repos{
 		clients: &clientRepo{db}, users: &userRepo{db}, codes: &authCodeRepo{db},
 		refresh: &refreshRepo{db}, access: &accessTokenRepo{db}, device: &deviceRepo{db}, pushed: &pushedRepo{db},
+		approve: &approvalRepo{db},
 		session: &sessionRepo{db},
 	}
 }
@@ -148,3 +150,4 @@ func createErr(err error) error {
 	}
 	return err
 }
+func (r repos) Approvals() oauth.ApprovalRepository { return r.approve }

@@ -89,6 +89,19 @@ func (m *Manager) credentialTag(passwordHash string) string {
 	return m.sign("credential|" + passwordHash)
 }
 
+// CSRFToken returns an anti-forgery token bound to username and to the
+// purpose string (which the caller builds from whatever the protected form
+// submits, for example the client and scope being approved). A page on another
+// origin cannot read it, so it cannot forge the POST that carries it.
+func (m *Manager) CSRFToken(username, purpose string) string {
+	return m.sign("csrf|" + username + "|" + purpose)
+}
+
+// VerifyCSRF reports whether token is the CSRFToken for username and purpose.
+func (m *Manager) VerifyCSRF(username, purpose, token string) bool {
+	return token != "" && hmac.Equal([]byte(token), []byte(m.CSRFToken(username, purpose)))
+}
+
 // CredentialCurrent reports whether the session was issued under the given
 // (current) password hash. A password change makes it false for every session
 // issued before the change.
