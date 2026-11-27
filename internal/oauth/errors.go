@@ -38,6 +38,8 @@ const (
 
 	// RFC 9449 §5 DPoP error for a missing or invalid proof.
 	CodeInvalidDPoPProof Code = "invalid_dpop_proof"
+	// RFC 9449 §8 / §9: the proof lacks a current server-provided nonce.
+	CodeUseDPoPNonce Code = "use_dpop_nonce"
 
 	// RFC 7591 §3.2.2 registration errors.
 	CodeInvalidRedirectURI    Code = "invalid_redirect_uri"
@@ -175,6 +177,12 @@ func InvalidClientMetadata(description string) *Error {
 // description is deliberately generic: which check failed is not disclosed.
 func InvalidDPoPProof() *Error {
 	return newError(CodeInvalidDPoPProof, "the DPoP proof is missing or invalid")
+}
+
+// UseDPoPNonce builds the RFC 9449 §8 use_dpop_nonce error (HTTP 400 at the
+// token endpoint). The HTTP layer attaches the DPoP-Nonce header.
+func UseDPoPNonce() *Error {
+	return newError(CodeUseDPoPNonce, "authorization server requires a DPoP nonce; retry with the DPoP-Nonce header value")
 }
 
 // AccessDenied builds an access_denied error.
